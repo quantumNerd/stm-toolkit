@@ -121,7 +121,10 @@ class BasePlotter(ABC):
         the figure will be displayed inline.
         """
         self._ensure_plot()
-        if self.fig is not None:
+        # Check if there's an FFT figure (for SXMPlotter with data_source='fft')
+        if hasattr(self, 'fft_fig') and self.fft_fig is not None:
+            plt.show(self.fft_fig)
+        elif self.fig is not None:
             plt.show()
     
     def save(self, filename: Union[str, Path], dpi: Optional[int] = None,

@@ -10,7 +10,7 @@ This package provides utilities for loading and processing:
 
 from .base import BaseFile, BaseFileCollection
 from .plotting import BasePlotter
-from .sxm import SXMFile, SXMCollection, SXMPlotter
+from .sxm import SXMFile, SXMCollection, SXMPlotter, ProcessedSXMFile
 from .dat import DATFile, DATCollection, DATPlotter
 from .grid_spectroscopy import GridSpectroscopyFile, GridSpectroscopyCollection
 from .qcodes import QCoDesDatabase, QCoDesCollection, simple_plot_dts
@@ -26,6 +26,7 @@ __all__ = [
     "SXMFile",
     "SXMCollection",
     "SXMPlotter",
+    "ProcessedSXMFile",
     "DATFile",
     "DATCollection",
     "DATPlotter",

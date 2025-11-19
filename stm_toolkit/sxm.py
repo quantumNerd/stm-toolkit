@@ -18,6 +18,7 @@ import matplotlib.cm as cm
 from matplotlib.patches import Circle
 from matplotlib import colors
 from .base import BaseFile, BaseFileCollection
+from .base import BaseFile, BaseFileCollection
 from .plotting import BasePlotter
 
 
@@ -35,7 +36,8 @@ class SXMFile(BaseFile):
                  bias_voltage_key: Optional[str] = None,
                  source_drain_voltage_key: Optional[str] = None,
                  multipass_config_index: int = -2,
-                 multipass_bias_index: int = -4):
+                 multipass_bias_index: int = -4,
+                 auto_load: bool = True):
         """
         Initialize SXM file handler.
         
@@ -59,6 +61,9 @@ class SXMFile(BaseFile):
             Index in ":Multipass-Config:" list to use for bias extraction. Default: -2
         multipass_bias_index : int
             Index in the tab-split line from multipass_config_index. Default: -4
+        auto_load : bool
+            If True, automatically load the file on initialization (default: True).
+            If False, call load() manually.
         """
         super().__init__(file_path)
         # Original data storage
@@ -81,6 +86,22 @@ class SXMFile(BaseFile):
         self.source_drain_voltage_key = source_drain_voltage_key
         self.multipass_config_index = multipass_config_index
         self.multipass_bias_index = multipass_bias_index
+        
+        # Auto-load if requested
+        if auto_load:
+            try:
+                self.load()
+            except (FileNotFoundError, ValueError) as e:
+                # Store error but don't raise - allows object creation even if file doesn't exist
+                # User can call load() manually later
+                self._load_error = e
+                self._load_attempted = True
+            else:
+                self._load_error = None
+                self._load_attempted = True
+        else:
+            self._load_error = None
+            self._load_attempted = False
         
     def _parse_header(self, file_bytes: bytes) -> Tuple[Dict[str, Any], int]:
         """
@@ -737,7 +758,7 @@ class SXMFile(BaseFile):
         return self.header.get("source_drain_voltage", 0.0)
     
     def plot(self, channel: Optional[str] = None, direction: int = 0, 
-             data_source: str = 'raw', ax: Optional[plt.Axes] = None, **kwargs) -> 'SXMPlotter':
+             ax: Optional[plt.Axes] = None, **kwargs) -> 'SXMPlotter':
         """
         Create a plotter for this SXM file.
         
@@ -747,20 +768,364 @@ class SXMFile(BaseFile):
             Channel name to plot
         direction : int
             Direction (0=forward, 1=backward)
-        data_source : str
-            What to plot: 'raw' (original data), 'processed' (background-subtracted),
-            or 'fft' (FFT results). Default: 'raw'
         ax : Optional[matplotlib.axes.Axes]
             Axes to plot on. If None, creates a new figure.
         **kwargs
-            Additional plotting parameters (e.g., figsize, cmap, etc.)
+            Additional plotting parameters (e.g., figsize, cmap, subtract_plane, flatten, etc.)
             
         Returns
         -------
         SXMPlotter
             Plotter instance
         """
-        return SXMPlotter(self, channel=channel, direction=direction, data_source=data_source, ax=ax, **kwargs)
+        return SXMPlotter(self, channel=channel, direction=direction, ax=ax, **kwargs)
+    
+    def calc(self, subtract_plane: bool = False, flatten: bool = False,
+             filter_current: Optional[int] = None, fft: bool = False,
+             channel: Optional[str] = None, direction: int = 0,
+             window_function: Optional[str] = None, 
+             processing_order: Optional[List[str]] = None, **kwargs) -> 'ProcessedSXMFile':
+        """
+        Apply processing operations and return a ProcessedSXMFile.
+        
+        This method creates a processed copy of the file with processing applied.
+        The processed file stores processed data instead of raw data.
+        
+        Processing steps are applied in the order specified by processing_order,
+        or in the default order: subtract_plane/flatten -> filter -> fft
+        
+        Parameters
+        ----------
+        subtract_plane : bool
+            If True, subtract a 2D plane from the image
+        flatten : bool
+            If True, subtract linear fit from every fast-scan line
+        filter_current : Optional[int]
+            Savitzky-Golay filter window size (None = no filtering)
+        fft : bool
+            If True, compute and store FFT results
+        channel : Optional[str]
+            Channel to process. If None, processes default image_data
+        direction : int
+            Direction (0=forward, 1=backward)
+        window_function : Optional[str]
+            Window function for FFT ('blackman', etc.)
+        processing_order : Optional[List[str]]
+            Order of processing steps: ['subtract_plane', 'filter', 'fft'] or 
+            ['flatten', 'filter', 'fft']. If None, uses default order based on 
+            which flags are True.
+        **kwargs
+            Additional processing parameters
+            
+        Returns
+        -------
+        ProcessedSXMFile
+            A processed copy of this file with processing applied
+        """
+        return ProcessedSXMFile.from_sxm_file(
+            self, subtract_plane=subtract_plane, flatten=flatten,
+            filter_current=filter_current, fft=fft,
+            channel=channel, direction=direction,
+            window_function=window_function, 
+            processing_order=processing_order, **kwargs
+        )
+
+
+class ProcessedSXMFile(SXMFile):
+    """
+    Processed version of SXMFile with processing operations applied.
+    
+    This class stores processed data instead of raw data, while maintaining
+    all metadata and the ability to access the original raw data.
+    """
+    
+    def __init__(self, original_file: SXMFile, processed_data: Dict[str, Any],
+                 processing_steps: List[str]):
+        """
+        Initialize processed SXM file.
+        
+        Parameters
+        ----------
+        original_file : SXMFile
+            The original SXMFile this was processed from
+        processed_data : Dict[str, Any]
+            Dictionary containing processed data:
+            - 'image_data': Processed image (replaces raw image_data)
+            - 'data': Processed channel data (replaces raw data)
+            - 'fft': Optional FFT results
+        processing_steps : List[str]
+            List of processing steps applied (e.g., ['subtract_plane', 'filter'])
+        """
+        # Initialize with original file path and settings
+        super().__init__(
+            original_file.file_path,
+            gate_voltage_key=original_file.gate_voltage_key,
+            bias_voltage_key=original_file.bias_voltage_key,
+            source_drain_voltage_key=original_file.source_drain_voltage_key,
+            multipass_config_index=original_file.multipass_config_index,
+            multipass_bias_index=original_file.multipass_bias_index,
+            auto_load=False  # Don't auto-load, we'll set data manually
+        )
+        
+        # Store reference to original file
+        self.original_file = original_file
+        
+        # Copy all metadata and properties from original
+        self.header = original_file.header.copy()
+        self.metadata = original_file.metadata.copy()
+        self.x_pixels = original_file.x_pixels
+        self.y_pixels = original_file.y_pixels
+        self.x_range = original_file.x_range
+        self.y_range = original_file.y_range
+        
+        # Replace raw data with processed data
+        self.image_data = processed_data.get('image_data', original_file.image_data)
+        if 'data' in processed_data:
+            # Deep copy to avoid modifying original
+            self.data = {k: [v[0].copy(), v[1].copy()] for k, v in processed_data['data'].items()}
+        else:
+            # Deep copy channel data from original
+            self.data = {k: [v[0].copy(), v[1].copy()] for k, v in original_file.data.items()}
+            # Update with processed image_data if it's the default channel
+            if self.image_data is not None and self.image_data is not original_file.image_data:
+                # Find which channel corresponds to image_data and update it
+                for ch_name, ch_data in self.data.items():
+                    if (ch_data[0] is original_file.image_data or 
+                        (ch_data[0] is not None and original_file.image_data is not None and 
+                         np.array_equal(ch_data[0], original_file.image_data))):
+                        ch_data[0] = self.image_data
+                        break
+        
+        # Store processing information
+        self.processing_steps = processing_steps
+        self.processed_data = processed_data
+        
+        # Store FFT if computed
+        if 'fft' in processed_data:
+            self._fft_results = processed_data['fft']
+        else:
+            self._fft_results = None
+    
+    @classmethod
+    def from_sxm_file(cls, sxm_file: SXMFile, subtract_plane: bool = False,
+                     flatten: bool = False, filter_current: Optional[int] = None,
+                     fft: bool = False, channel: Optional[str] = None,
+                     direction: int = 0, window_function: Optional[str] = None,
+                     processing_order: Optional[List[str]] = None, **kwargs) -> 'ProcessedSXMFile':
+        """
+        Create a ProcessedSXMFile from an SXMFile by applying processing operations.
+        
+        Processing steps are applied sequentially in the order specified.
+        
+        Parameters
+        ----------
+        sxm_file : SXMFile
+            The original SXMFile to process
+        subtract_plane : bool
+            If True, subtract a 2D plane
+        flatten : bool
+            If True, subtract linear fit from every fast-scan line
+        filter_current : Optional[int]
+            Savitzky-Golay filter window size
+        fft : bool
+            If True, compute FFT
+        channel : Optional[str]
+            Channel to process
+        direction : int
+            Direction (0=forward, 1=backward)
+        window_function : Optional[str]
+            Window function for FFT
+        processing_order : Optional[List[str]]
+            Order of processing steps: ['subtract_plane', 'filter', 'fft'] or 
+            ['flatten', 'filter', 'fft']. If None, uses default order based on 
+            which flags are True: background -> filter -> fft
+        **kwargs
+            Additional processing parameters
+            
+        Returns
+        -------
+        ProcessedSXMFile
+            Processed file with operations applied
+        """
+        if sxm_file.image_data is None and not sxm_file.data:
+            raise ValueError("File must be loaded before processing. Call load() first.")
+        
+        # Get the image to process
+        if channel is not None and channel in sxm_file.data:
+            image = sxm_file.data[channel][direction].copy()
+            process_channel = channel
+        else:
+            image = sxm_file.image_data.copy()
+            process_channel = None
+        
+        processing_steps = []
+        processed_data = {}
+        
+        # Determine processing order
+        if processing_order is None:
+            # Default order based on what's enabled
+            processing_order = []
+            if subtract_plane:
+                processing_order.append('subtract_plane')
+            elif flatten:
+                processing_order.append('flatten')
+            if filter_current is not None and filter_current > 0:
+                processing_order.append('filter')
+            if fft:
+                processing_order.append('fft')
+        else:
+            # Validate processing_order contains only valid steps
+            valid_steps = ['subtract_plane', 'flatten', 'filter', 'fft']
+            for step in processing_order:
+                if step not in valid_steps:
+                    raise ValueError(f"Invalid processing step '{step}'. Valid steps: {valid_steps}")
+        
+        # Apply processing steps sequentially in order
+        for step in processing_order:
+            if step == 'subtract_plane' and subtract_plane:
+                image = sxm_file.subtract_plane(image=image, channel=process_channel, direction=direction)
+                processing_steps.append('subtract_plane')
+            elif step == 'flatten' and flatten:
+                image = sxm_file.subtract_linear_by_line(image=image, channel=process_channel, direction=direction)
+                processing_steps.append('flatten')
+            elif step == 'filter' and filter_current is not None and filter_current > 0:
+                from scipy.signal import savgol_filter
+                image = savgol_filter(image, filter_current, 1, axis=-1)
+                processing_steps.append(f'filter_{filter_current}')
+            elif step == 'fft' and fft:
+                # FFT will be computed after all image processing is done
+                pass
+        
+        # Store processed image
+        if process_channel:
+            # Process specific channel
+            processed_data['data'] = {k: [v[0].copy(), v[1].copy()] for k, v in sxm_file.data.items()}
+            processed_data['data'][channel][direction] = image
+            processed_data['image_data'] = processed_data['data'][channel][0]  # Default to forward
+        else:
+            # Process default image
+            processed_data['image_data'] = image
+            processed_data['data'] = {k: [v[0].copy(), v[1].copy()] for k, v in sxm_file.data.items()}
+            # Update default image_data in data if it matches
+            for ch_name, ch_data in processed_data['data'].items():
+                if (ch_data[0] is sxm_file.image_data or 
+                    (ch_data[0] is not None and sxm_file.image_data is not None and 
+                     np.array_equal(ch_data[0], sxm_file.image_data))):
+                    ch_data[0] = image
+                    break
+        
+        # Compute FFT if requested (after all image processing)
+        if fft and 'fft' in processing_order:
+            fft_result = sxm_file.compute_fft(
+                image=image,
+                channel=process_channel,
+                direction=direction,
+                window_function=window_function,
+                background_subtract=False  # Already processed
+            )
+            processed_data['fft'] = fft_result
+            processing_steps.append('fft')
+        
+        return cls(sxm_file, processed_data, processing_steps)
+    
+    def get_original_file(self) -> SXMFile:
+        """
+        Get the original SXMFile containing the raw data.
+        
+        This method returns the original file object in case it was lost in the code.
+        
+        Returns
+        -------
+        SXMFile
+            The original SXMFile with raw data
+        """
+        return self.original_file
+    
+    def get_raw_image(self, channel: Optional[str] = None, direction: int = 0) -> Optional[np.ndarray]:
+        """
+        Get the original raw image from the original file.
+        
+        Parameters
+        ----------
+        channel : Optional[str]
+            Channel name
+        direction : int
+            Direction (0=forward, 1=backward)
+            
+        Returns
+        -------
+        Optional[np.ndarray]
+            Raw image data from original file
+        """
+        return self.original_file.get_image(processed=False, channel=channel, direction=direction)
+    
+    def get_image(self, processed: bool = True, channel: Optional[str] = None, 
+                  direction: int = 0) -> Optional[np.ndarray]:
+        """
+        Get image data. For ProcessedSXMFile, returns processed data by default.
+        
+        Parameters
+        ----------
+        processed : bool
+            If True, return processed image; if False, return raw from original file
+        channel : Optional[str]
+            Channel name
+        direction : int
+            Direction (0=forward, 1=backward)
+            
+        Returns
+        -------
+        Optional[np.ndarray]
+            Image data
+        """
+        if not processed:
+            return self.original_file.get_image(processed=False, channel=channel, direction=direction)
+        
+        # Return processed data
+        if channel is not None and channel in self.data:
+            return self.data[channel][direction]
+        
+        return self.image_data
+    
+    def get_fft(self, channel: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get stored FFT results if available.
+        
+        Parameters
+        ----------
+        channel : Optional[str]
+            Channel name
+            
+        Returns
+        -------
+        Optional[Dict[str, Any]]
+            FFT results if computed during processing
+        """
+        return self._fft_results
+    
+    def compute_fft(self, image: Optional[np.ndarray] = None, channel: Optional[str] = None,
+                   direction: int = 0, window_function: Optional[str] = None,
+                   background_subtract: bool = False, background_method: str = 'plane',
+                   **kwargs) -> Dict[str, Any]:
+        """
+        Compute FFT from processed data (no additional background subtraction needed).
+        
+        This method computes FFT from the already-processed image data.
+        """
+        if image is None:
+            image = self.get_image(processed=True, channel=channel, direction=direction)
+        else:
+            image = image.copy()
+        
+        # Use parent's compute_fft but skip background subtraction (already processed)
+        return super().compute_fft(
+            image=image,
+            channel=channel,
+            direction=direction,
+            window_function=window_function,
+            background_subtract=False,  # Already processed
+            **kwargs
+        )
 
 
 class SXMPlotter(BasePlotter):
@@ -771,7 +1136,7 @@ class SXMPlotter(BasePlotter):
     """
     
     def __init__(self, sxm_file: SXMFile, channel: Optional[str] = None, 
-                 direction: int = 0, data_source: str = 'raw',
+                 direction: int = 0,
                  flatten: bool = False, subtract_plane: bool = False,
                  subtract_line: bool = False, cmap: Union[str, Any] = 'Blues_r',
                  filter_current: Optional[int] = None, map_color_std: Optional[float] = None,
@@ -808,7 +1173,6 @@ class SXMPlotter(BasePlotter):
         self.sxm_file = sxm_file
         self.channel = channel
         self.direction = direction
-        self.data_source = data_source  # 'raw', 'processed', or 'fft'
         self.flatten = flatten or subtract_line
         self.subtract_plane = subtract_plane
         # Convert string colormap names to actual colormap objects
@@ -826,14 +1190,7 @@ class SXMPlotter(BasePlotter):
     
     def _setup_plot(self, **kwargs) -> None:
         """Set up the initial plot."""
-        # If FFT plotting, skip the rest (handled in fft() method)
-        if self.data_source == 'fft':
-            # Create figure if needed
-            if self.ax is None:
-                figsize = self._get_figsize(self.DEFAULT_FIGSIZE_2D, **kwargs)
-                self.fig = plt.figure(figsize=figsize)
-                self.ax = self.fig.add_subplot(111)
-            return
+        # FFT is computed on-the-fly when fft() is called, no special handling needed here
         
         # Get raw image data
         image_data = self.sxm_file.get_image(
@@ -845,28 +1202,19 @@ class SXMPlotter(BasePlotter):
         if image_data is None:
             raise ValueError("No image data available to plot.")
         
-        # Process on-the-fly based on data_source
-        if self.data_source == 'processed':
-            # Apply background subtraction on-the-fly
-            if self.subtract_plane:
-                image_data = self.sxm_file.subtract_plane(
-                    image=image_data,
-                    channel=self.channel,
-                    direction=self.direction
-                )
-            elif self.flatten:
-                image_data = self.sxm_file.subtract_linear_by_line(
-                    image=image_data,
-                    channel=self.channel,
-                    direction=self.direction
-                )
-            else:
-                # Default: subtract plane
-                image_data = self.sxm_file.subtract_plane(
-                    image=image_data,
-                    channel=self.channel,
-                    direction=self.direction
-                )
+        # Apply background subtraction if requested
+        if self.subtract_plane:
+            image_data = self.sxm_file.subtract_plane(
+                image=image_data,
+                channel=self.channel,
+                direction=self.direction
+            )
+        elif self.flatten:
+            image_data = self.sxm_file.subtract_linear_by_line(
+                image=image_data,
+                channel=self.channel,
+                direction=self.direction
+            )
         
         # Apply filtering if requested (Savitzky-Golay filter, as in notebook)
         if self.filter_current is not None and self.filter_current > 0:
@@ -991,24 +1339,15 @@ class SXMPlotter(BasePlotter):
         **kwargs
             Additional plotting parameters (e.g., figsize)
         """
-        # Ensure main plot is created first (for data_source='fft', this will be skipped)
-        if self.data_source != 'fft':
-            self._ensure_plot()
+        # Compute FFT on-the-fly from the same image being displayed
+        # Get raw image first
+        image = self.sxm_file.get_image(processed=False, channel=self.channel, direction=self.direction)
         
-        # Compute FFT on-the-fly (no storage)
-        # Get image to compute FFT from
-        if self.data_source == 'processed':
-            # Get processed image
-            image = self.sxm_file.get_image(processed=False, channel=self.channel, direction=self.direction)
-            if self.subtract_plane:
-                image = self.sxm_file.subtract_plane(image=image, channel=self.channel, direction=self.direction)
-            elif self.flatten:
-                image = self.sxm_file.subtract_linear_by_line(image=image, channel=self.channel, direction=self.direction)
-            else:
-                image = self.sxm_file.subtract_plane(image=image, channel=self.channel, direction=self.direction)
-        else:
-            # Use raw image
-            image = self.sxm_file.get_image(processed=False, channel=self.channel, direction=self.direction)
+        # Apply same processing as the plot (if any)
+        if self.subtract_plane:
+            image = self.sxm_file.subtract_plane(image=image, channel=self.channel, direction=self.direction)
+        elif self.flatten:
+            image = self.sxm_file.subtract_linear_by_line(image=image, channel=self.channel, direction=self.direction)
         
         # Compute FFT on-the-fly
         fft_result = self.sxm_file.compute_fft(
