@@ -8,6 +8,7 @@ which contain grid spectroscopy data (I-V or dI/dV maps).
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+import re
 from .base import BaseFile, BaseFileCollection
 
 
@@ -33,6 +34,51 @@ class GridSpectroscopyFile(BaseFile):
         self.x_positions: Optional[np.ndarray] = None
         self.y_positions: Optional[np.ndarray] = None
         
+    def _parse_header(self) -> Tuple[Dict[str, Any], int]:
+        """
+        Parse the header section of a .3ds file.
+        Based on nanonis_load implementation.
+        
+        Returns
+        -------
+        Tuple[Dict[str, Any], int]
+            Header dictionary and byte position where data starts
+        """
+        header = {}
+        
+        with open(self.file_path, "rb") as f:
+            file_bytes = f.read()
+        
+        # Find header end marker
+        header_text = ""
+        idx = 0
+        while True:
+            try:
+                header_text += chr(file_bytes[idx])  # Python 3
+            except (TypeError, IndexError):
+                break
+            idx += 1
+            if ":HEADER_END:" in header_text:
+                break
+        
+        # Parse header lines
+        header_text = header_text.split("\r\n")[:-1]
+        for entry in header_text:
+            if "=" not in entry:
+                continue
+            entry_array = entry.split("=", 1)
+            key = entry_array[0].strip()
+            value = entry_array[1].strip() if len(entry_array) > 1 else ""
+            if key == "Comment":
+                # Comment may contain "=" so join the rest
+                value = "=".join(entry_array[1:])
+            header[key] = value
+        
+        # Data starts after ":HEADER_END:" marker (idx points to end of marker)
+        data_start = idx + 2  # +2 for \r\n after :HEADER_END:
+        
+        return header, data_start
+    
     def load(self) -> Dict[str, Any]:
         """
         Load raw data from .3ds file.
@@ -47,24 +93,178 @@ class GridSpectroscopyFile(BaseFile):
             - 'y_positions': Array of Y positions
             - 'metadata': Dictionary of file metadata
         """
-        # TODO: Implement actual .3ds file loading
-        # This is a placeholder that will be implemented when sample files are provided
-        raise NotImplementedError("Grid spectroscopy file loading not yet implemented. Waiting for sample files.")
+        if not self.file_path.exists():
+            raise FileNotFoundError(f"File not found: {self.file_path}")
         
-        # Placeholder structure:
-        # self.spectroscopy_data = ...  # 3D array
-        # self.bias_voltage = ...
-        # self.x_positions = ...
-        # self.y_positions = ...
-        # self.metadata = ...
-        # self.raw_data = {
-        #     'data': self.spectroscopy_data,
-        #     'bias_voltage': self.bias_voltage,
-        #     'x_positions': self.x_positions,
-        #     'y_positions': self.y_positions,
-        #     'metadata': self.metadata
-        # }
-        # return self.raw_data
+        if not self.file_path.suffix.lower() == ".3ds":
+            raise ValueError(f"File must have .3ds extension: {self.file_path}")
+        
+        # Parse header
+        self.header, data_start = self._parse_header()
+        self.metadata = self.header.copy()
+        
+        # Extract grid dimensions (based on nanonis_load)
+        temp = re.split(' |"', self.header.get("Grid dim", '"1 1"'))
+        self.nx = int(temp[1])
+        self.ny = int(temp[3])
+        
+        # Extract grid settings
+        temp = re.split(";|=", self.header.get("Grid settings", "0;0;0;0;0"))
+        self.header["x_center (nm)"] = float(temp[0]) * 1e9
+        self.header["y_center (nm)"] = float(temp[1]) * 1e9
+        self.header["x_size (nm)"] = float(temp[2]) * 1e9
+        self.header["y_size (nm)"] = float(temp[3]) * 1e9
+        self.header["angle"] = float(temp[4])
+        
+        # Extract number of parameters and points
+        self.n_params = int(self.header.get("# Parameters (4 byte)", 13))
+        self.n_points = int(self.header.get("Points", 241))
+        
+        # Extract channels
+        channels_str = self.header.get("Channels", '"Current (A)"')
+        channels = re.split('"|;', channels_str)[1:-1]
+        self.channels = [ch for ch in channels if ch]  # Remove empty strings
+        n_channels = len(self.channels)
+        
+        # Read binary data
+        with open(self.file_path, "rb") as f:
+            file_bytes = f.read()
+        
+        raw_data = file_bytes[data_start:]
+        bpp = self.n_points * n_channels + self.n_params  # bytes per point
+        data_pts = self.nx * self.ny * bpp
+        
+        # Read numerical data (big-endian float32)
+        numerical_data = np.frombuffer(raw_data, dtype=">f")
+        
+        # Extract start and end bias from first two values
+        if len(numerical_data) >= 2:
+            self.header["Start Bias (V)"] = float(numerical_data[0])
+            self.header["End Bias (V)"] = float(numerical_data[1])
+        else:
+            # Fallback to header values
+            sweep_start = float(self.header.get("Bias Spectroscopy>Sweep Start (V)", -0.1))
+            sweep_end = float(self.header.get("Bias Spectroscopy>Sweep End (V)", 0.1))
+            self.header["Start Bias (V)"] = sweep_start
+            self.header["End Bias (V)"] = sweep_end
+        
+        # Extract parameters
+        self.parameters = {}
+        self.parameter_list = []
+        
+        fixed_params = self.header.get("Fixed parameters", "").strip('"').split(";")
+        exp_params = self.header.get("Experiment parameters", "").strip('"').split(";")
+        
+        for param_name in fixed_params:
+            if param_name:
+                self.parameters[param_name] = []
+                self.parameter_list.append(param_name)
+        for param_name in exp_params:
+            if param_name:
+                self.parameters[param_name] = []
+                self.parameter_list.append(param_name)
+        
+        # Organize data into predata structure (as in nanonis_load)
+        predata = [[{} for y in range(self.ny)] for x in range(self.nx)]
+        
+        for i in range(self.nx):
+            for j in range(self.ny):
+                for k in range(n_channels):
+                    start_index = (
+                        (i * self.ny + j) * bpp
+                        + self.n_params
+                        + k * self.n_points
+                    )
+                    end_index = start_index + self.n_points
+                    
+                    if end_index <= len(numerical_data):
+                        predata[i][j][self.channels[k]] = numerical_data[start_index:end_index]
+                        
+                        # Extract parameters (only for first channel)
+                        if k == 0:
+                            for idx, param_name in enumerate(self.parameter_list):
+                                param_idx = (
+                                    (i * self.ny + j) * bpp
+                                    + idx
+                                )
+                                if param_idx < len(numerical_data):
+                                    self.parameters[param_name].append(numerical_data[param_idx])
+                                else:
+                                    self.parameters[param_name].append(0.0)
+                    else:
+                        predata[i][j][self.channels[k]] = np.zeros(self.n_points)
+                        if k == 0:
+                            for param_name in self.parameters:
+                                self.parameters[param_name].append(0.0)
+        
+        # Create bias array
+        self.bias_voltage = np.linspace(
+            self.header["Start Bias (V)"],
+            self.header["End Bias (V)"],
+            self.n_points
+        )
+        
+        # Organize data into dictionary (as in nanonis_load)
+        self.data = {}
+        for channel in self.channels:
+            self.data[channel] = np.array(
+                [
+                    [predata[x][y][channel] for y in range(self.ny)]
+                    for x in range(self.nx)
+                ]
+            )
+        
+        # Store spectroscopy data in 3D format [x, y, bias] for first channel
+        if self.channels:
+            self.spectroscopy_data = self.data[self.channels[0]]
+        
+        # Extract positions from parameters if available
+        if "X (m)" in self.parameters and "Y (m)" in self.parameters:
+            self.x_positions = np.array(self.parameters["X (m)"]) * 1e9  # Convert to nm
+            self.y_positions = np.array(self.parameters["Y (m)"]) * 1e9  # Convert to nm
+            # Reshape to match grid
+            if len(self.x_positions) == self.nx * self.ny:
+                self.x_positions = self.x_positions.reshape(self.nx, self.ny)
+                self.y_positions = self.y_positions.reshape(self.nx, self.ny)
+        else:
+            # Create grid positions
+            x_center = self.header.get("x_center (nm)", 0)
+            y_center = self.header.get("y_center (nm)", 0)
+            x_size = self.header.get("x_size (nm)", self.nx * 1.0)
+            y_size = self.header.get("y_size (nm)", self.ny * 1.0)
+            
+            x_pos = np.linspace(x_center - x_size/2, x_center + x_size/2, self.nx)
+            y_pos = np.linspace(y_center - y_size/2, y_center + y_size/2, self.ny)
+            self.x_positions, self.y_positions = np.meshgrid(x_pos, y_pos, indexing='ij')
+        
+        self.raw_data = {
+            'data': self.data,  # Dictionary of all channels
+            'spectroscopy_data': self.spectroscopy_data,  # First channel as 3D array
+            'bias_voltage': self.bias_voltage,
+            'x_positions': self.x_positions,
+            'y_positions': self.y_positions,
+            'metadata': self.metadata,
+            'channels': self.channels,
+            'parameters': self.parameters
+        }
+        
+        return self.raw_data
+    
+    def get_channel(self, channel_name: str) -> Optional[np.ndarray]:
+        """
+        Get data for a specific channel.
+        
+        Parameters
+        ----------
+        channel_name : str
+            Name of the channel
+            
+        Returns
+        -------
+        np.ndarray or None
+            3D array [x, y, bias] for the channel
+        """
+        return self.data.get(channel_name)
     
     def process(self, normalize: bool = False, smooth: bool = False, **kwargs) -> Dict[str, Any]:
         """

@@ -5,9 +5,18 @@ This module provides classes for loading and processing QCoDes database files.
 """
 
 import numpy as np
+import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from .base import BaseFile, BaseFileCollection
+
+try:
+    from qcodes.dataset.data_export import reshape_2D_data
+    from qcodes.dataset import initialise_or_create_database_at, load_or_create_experiment
+except ImportError:
+    reshape_2D_data = None
+    initialise_or_create_database_at = None
+    load_or_create_experiment = None
 
 
 class QCoDesDatabase(BaseFile):
@@ -17,43 +26,105 @@ class QCoDesDatabase(BaseFile):
     Supports loading and processing data from QCoDes measurement databases.
     """
     
-    def __init__(self, file_path: str | Path):
+    def __init__(self, db_path: str | Path, experiment_name: str, sample_name: str):
         """
         Initialize QCoDes database handler.
         
         Parameters
         ----------
-        file_path : str | Path
+        db_path : str | Path
             Path to the QCoDes database file
+        experiment_name : str
+            Name of the experiment
+        sample_name : str
+            Name of the sample
         """
-        super().__init__(file_path)
-        self.database_data: Optional[Dict[str, Any]] = None
-        self.measurements: Optional[List[Dict[str, Any]]] = None
+        super().__init__(db_path)
+        self.db_path = Path(db_path)
+        self.experiment_name = experiment_name
+        self.sample_name = sample_name
         
-    def load(self) -> Dict[str, Any]:
+        # Initialize database and experiment
+        if initialise_or_create_database_at is None:
+            raise ImportError("QCoDes is required. Please install qcodes.")
+        
+        initialise_or_create_database_at(str(self.db_path))
+        self.exp0 = load_or_create_experiment(
+            experiment_name=self.experiment_name,
+            sample_name=self.sample_name
+        )
+        
+        # Data storage
+        self.x: Optional[np.ndarray] = None  # Gate (V)
+        self.y: Optional[np.ndarray] = None  # Bias (V)
+        self.z: Optional[np.ndarray] = None  # dI/dV or other signal
+        self.run_id: Optional[int] = None
+        self.raw_data: Optional[Dict[str, Any]] = None
+        
+    def load_run(self, run_id: int, signal_key: str = "S86", 
+                 x_key: str = "Gate", y_key: str = "Bias", z_key: str = "S86") -> Dict[str, Any]:
         """
-        Load raw data from QCoDes database file.
+        Load data from a specific run_id.
         
+        Parameters
+        ----------
+        run_id : int
+            Run ID to load
+        signal_key : str
+            Key for the signal parameter (default: "S86")
+        x_key : str
+            Key for x-axis data (default: "Gate")
+        y_key : str
+            Key for y-axis data (default: "Bias")
+        z_key : str
+            Key for z-axis data (default: "S86")
+            
         Returns
         -------
         Dict[str, Any]
             Dictionary containing:
-            - 'measurements': List of measurement dictionaries
-            - 'metadata': Dictionary of database metadata
+            - 'x': X-axis data (Gate)
+            - 'y': Y-axis data (Bias)
+            - 'z': Z-axis data (dI/dV)
+            - 'run_id': Run ID
         """
-        # TODO: Implement actual QCoDes database loading
-        # This is a placeholder that will be implemented when sample files are provided
-        raise NotImplementedError("QCoDes database loading not yet implemented. Waiting for sample files.")
+        if reshape_2D_data is None:
+            raise ImportError("qcodes.dataset.data_export.reshape_2D_data is required. "
+                             "Please ensure QCoDes is properly installed.")
         
-        # Placeholder structure:
-        # self.database_data = ...
-        # self.measurements = ...
-        # self.metadata = ...
-        # self.raw_data = {
-        #     'measurements': self.measurements,
-        #     'metadata': self.metadata
-        # }
-        # return self.raw_data
+        # Load data from QCoDes
+        dat0 = self.exp0.data_set(run_id).get_parameter_data()
+        
+        # Extract data
+        signal_data = dat0[signal_key]
+        
+        x_raw = signal_data[x_key]
+        y_raw = signal_data[y_key]
+        z_raw = signal_data[z_key]
+        
+        # Reshape to 2D
+        x, y, z = reshape_2D_data(x_raw, y_raw, z_raw)
+        
+        # Store in class
+        self.x = x
+        self.y = y
+        self.z = z
+        self.run_id = run_id
+        
+        self.raw_data = {
+            'x': self.x,
+            'y': self.y,
+            'z': self.z,
+            'run_id': self.run_id
+        }
+        
+        return self.raw_data
+    
+    def load(self) -> Dict[str, Any]:
+        """
+        Legacy method - use load_run() instead.
+        """
+        raise NotImplementedError("Use load_run(run_id) to load data from a specific run.")
     
     def process(self, filter_measurements: bool = False, **kwargs) -> Dict[str, Any]:
         """
@@ -131,27 +202,83 @@ class QCoDesDatabase(BaseFile):
         # TODO: Implement measurement aggregation
         raise NotImplementedError("Measurement aggregation not yet implemented.")
     
-    def get_measurements(self) -> Optional[List[Dict[str, Any]]]:
-        """Get the list of measurements."""
-        return self.measurements
-    
-    def get_measurement(self, index: int) -> Optional[Dict[str, Any]]:
+    def get_data(self) -> Optional[Dict[str, Any]]:
         """
-        Get a specific measurement by index.
+        Get the loaded data.
         
-        Parameters
-        ----------
-        index : int
-            Index of the measurement
-            
         Returns
         -------
         Dict[str, Any] or None
-            Measurement dictionary
+            Dictionary containing x, y, z data and run_id
         """
-        if self.measurements is None or index >= len(self.measurements):
-            return None
-        return self.measurements[index]
+        return self.raw_data
+    
+    def plot(self, ax=None, plot_title: str = "", norm_const: float = 10, **kwargs):
+        """
+        Plot the loaded data as a 2D colormap.
+        
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes to plot on. If None, creates a new figure
+        plot_title : str
+            Title for the plot
+        norm_const : float
+            Normalization constant for colormap (default: 10)
+        **kwargs
+            Additional plotting parameters
+            
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object with the plot
+        """
+        if self.x is None or self.y is None or self.z is None:
+            raise ValueError("No data loaded. Call load_run(run_id) first.")
+        
+        # Create figure if needed (using default 2D figure size)
+        if ax is None:
+            from .plotting import BasePlotter
+            default_figsize = BasePlotter.DEFAULT_FIGSIZE_2D
+            figsize = kwargs.get('figsize', default_figsize)
+            fig, ax = plt.subplots(figsize=figsize)
+        
+        # Set up colormap
+        cmap = plt.cm.RdYlBu_r
+        
+        # Create plot
+        if norm_const is not None:
+            norm = plt.Normalize(0, norm_const)
+            im = ax.pcolormesh(
+                self.x,  # Gate (V)
+                self.y * 1e3,  # Bias (mV)
+                self.z / 1e-3 * 1e9,  # dI/dV (nS)
+                cmap=cmap,
+                norm=norm,
+                rasterized=True,
+                shading='nearest'
+            )
+        else:
+            im = ax.pcolormesh(
+                self.x,  # Gate (V)
+                self.y * 1e3,  # Bias (mV)
+                self.z / 1e-3 * 1e9,  # dI/dV (nS)
+                cmap=cmap,
+                rasterized=True,
+                shading='nearest'
+            )
+        
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label(r'$dI/dV$ (nS)')
+        
+        # Set labels
+        ax.set_xlabel(r'$V_{\mathrm{g}}$ (V)')
+        ax.set_ylabel(r'$V_{\mathrm{b}}$ (mV)')
+        title = plot_title if plot_title else f'Run ID: {self.run_id}'
+        ax.set_title(title)
+        
+        return ax
 
 
 class QCoDesCollection(BaseFileCollection):
@@ -161,19 +288,26 @@ class QCoDesCollection(BaseFileCollection):
     Useful for analyzing multiple QCoDes databases.
     """
     
-    def __init__(self, file_paths: List[str] | List[Path], hyperparameters: Optional[Dict[str, Any]] = None):
+    def __init__(self, db_path: str | Path, experiment_name: str, sample_name: str,
+                 hyperparameters: Optional[Dict[str, Any]] = None):
         """
         Initialize QCoDes collection.
         
         Parameters
         ----------
-        file_paths : List[str] | List[Path]
-            List of paths to QCoDes database files
+        db_path : str | Path
+            Path to the QCoDes database file
+        experiment_name : str
+            Name of the experiment
+        sample_name : str
+            Name of the sample
         hyperparameters : Optional[Dict[str, Any]]
             Dictionary of hyperparameters
         """
-        super().__init__(file_paths, hyperparameters)
-        self.files = [QCoDesDatabase(path) for path in self.file_paths]
+        # For collection, we use a single database with multiple runs
+        super().__init__([db_path], hyperparameters)
+        self.db = QCoDesDatabase(db_path, experiment_name, sample_name)
+        self.files = [self.db]  # Single database instance
         
     def load_all(self) -> None:
         """Load all QCoDes database files in the collection."""
@@ -204,4 +338,99 @@ class QCoDesCollection(BaseFileCollection):
             List of measurement lists (one per database)
         """
         return [file.get_measurements() for file in self.files if file.get_measurements() is not None]
+
+
+def simple_plot_dts(exp0, run_id: int, ax=None, plot_title: str = "", 
+                    norm_const: float = 10, **kwargs):
+    """
+    Simple function to load and plot QCoDes data from one experiment and one run-id.
+    
+    This function loads data using exp0.data_set(run_id).get_parameter_data() and
+    plots it as a 2D colormap (dI/dV vs Gate and Bias).
+    
+    Parameters
+    ----------
+    exp0
+        QCoDes experiment object
+    run_id : int
+        Run ID to load
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot on. If None, creates a new figure
+    plot_title : str
+        Title for the plot
+    norm_const : float
+        Normalization constant for colormap (default: 10)
+    **kwargs
+        Additional plotting parameters
+        
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes object with the plot
+    """
+    if reshape_2D_data is None:
+        raise ImportError("qcodes.dataset.data_export.reshape_2D_data is required. "
+                         "Please ensure QCoDes is properly installed.")
+    
+    # Load data
+    dat0 = exp0.data_set(run_id).get_parameter_data()
+    
+    # Extract data using default keys (as in original notebook)
+    # keys=["S86","Gate","Bias","S86"] means:
+    # - Get "S86" parameter data
+    # - Use "Gate" as x-axis
+    # - Use "Bias" as y-axis  
+    # - Use "S86" values as z (color)
+    didv = dat0["S86"]  # get the x component of lock-in data
+    
+    x = didv["Gate"]
+    y = didv["Bias"]
+    z = didv["S86"]
+    
+    # Reshape to 2D (as in original notebook)
+    x, y, z = reshape_2D_data(x, y, z)
+    didv = z
+    
+    # Create figure if needed (using default 2D figure size)
+    if ax is None:
+        from .plotting import BasePlotter
+        default_figsize = BasePlotter.DEFAULT_FIGSIZE_2D
+        figsize = kwargs.get('figsize', default_figsize)
+        fig, ax = plt.subplots(figsize=figsize)
+    
+    # Set up colormap
+    cmap = plt.cm.RdYlBu_r
+    
+    # Create plot
+    if norm_const is not None:
+        norm = plt.Normalize(0, norm_const)
+        im = ax.pcolormesh(
+            x,  # Gate (V)
+            y * 1e3,  # Bias (mV)
+            didv / 1e-3 * 1e9,  # dI/dV (nS)
+            cmap=cmap,
+            norm=norm,
+            rasterized=True,
+            shading='nearest'
+        )
+    else:
+        im = ax.pcolormesh(
+            x,  # Gate (V)
+            y * 1e3,  # Bias (mV)
+            didv / 1e-3 * 1e9,  # dI/dV (nS)
+            cmap=cmap,
+            rasterized=True,
+            shading='nearest'
+        )
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label(r'$dI/dV$ (nS)')
+    
+    # Set labels
+    ax.set_xlabel(r'$V_{\mathrm{g}}$ (V)')
+    ax.set_ylabel(r'$V_{\mathrm{b}}$ (mV)')
+    ax.set_title(plot_title if plot_title else f'Run ID: {run_id}')
+    
+    return ax
 
