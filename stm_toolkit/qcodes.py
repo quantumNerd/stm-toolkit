@@ -126,43 +126,6 @@ class QCoDesDatabase(BaseFile):
         """
         raise NotImplementedError("Use load_run(run_id) to load data from a specific run.")
     
-    def process(self, filter_measurements: bool = False, **kwargs) -> Dict[str, Any]:
-        """
-        Process the loaded database data.
-        
-        Parameters
-        ----------
-        filter_measurements : bool
-            Whether to filter measurements based on criteria
-        **kwargs
-            Additional processing parameters:
-            - filter_criteria: Dictionary of filter criteria
-            - aggregate: Whether to aggregate measurements
-            
-        Returns
-        -------
-        Dict[str, Any]
-            Dictionary containing processed data
-        """
-        if self.raw_data is None:
-            raise ValueError("Data must be loaded before processing. Call load() first.")
-        
-        processed = {
-            'measurements': self.measurements.copy() if self.measurements is not None else None
-        }
-        
-        # Filter measurements
-        if filter_measurements:
-            filter_criteria = kwargs.get('filter_criteria', {})
-            processed['measurements'] = self._filter_measurements(processed['measurements'], filter_criteria)
-        
-        # Aggregation
-        if kwargs.get('aggregate', False):
-            processed['aggregated'] = self._aggregate_measurements(processed['measurements'], **kwargs)
-        
-        self.processed_data = processed
-        return processed
-    
     def _filter_measurements(self, measurements: List[Dict[str, Any]], 
                             criteria: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -313,20 +276,6 @@ class QCoDesCollection(BaseFileCollection):
         """Load all QCoDes database files in the collection."""
         for file in self.files:
             file.load()
-    
-    def process_all(self, filter_measurements: bool = False, **kwargs) -> None:
-        """
-        Process all files in the collection.
-        
-        Parameters
-        ----------
-        filter_measurements : bool
-            Whether to filter measurements
-        **kwargs
-            Additional processing parameters
-        """
-        for file in self.files:
-            file.process(filter_measurements=filter_measurements, **kwargs)
     
     def get_all_measurements(self) -> List[List[Dict[str, Any]]]:
         """

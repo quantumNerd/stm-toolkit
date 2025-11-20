@@ -266,47 +266,6 @@ class GridSpectroscopyFile(BaseFile):
         """
         return self.data.get(channel_name)
     
-    def process(self, normalize: bool = False, smooth: bool = False, **kwargs) -> Dict[str, Any]:
-        """
-        Process the loaded grid spectroscopy data.
-        
-        Parameters
-        ----------
-        normalize : bool
-            Whether to normalize the data
-        smooth : bool
-            Whether to smooth the data
-        **kwargs
-            Additional processing parameters:
-            - smooth_method: Smoothing method ('gaussian', 'moving_average', etc.)
-            - smooth_sigma: Sigma for Gaussian smoothing (if applicable)
-            
-        Returns
-        -------
-        Dict[str, Any]
-            Dictionary containing processed data
-        """
-        if self.raw_data is None:
-            raise ValueError("Data must be loaded before processing. Call load() first.")
-        
-        processed = {
-            'data': self.spectroscopy_data.copy() if self.spectroscopy_data is not None else None,
-            'bias_voltage': self.bias_voltage,
-            'x_positions': self.x_positions,
-            'y_positions': self.y_positions
-        }
-        
-        # Normalization
-        if normalize and processed['data'] is not None:
-            processed['data'] = self._normalize(processed['data'], **kwargs)
-        
-        # Smoothing
-        if smooth and processed['data'] is not None:
-            processed['data'] = self._smooth(processed['data'], **kwargs)
-        
-        self.processed_data = processed
-        return processed
-    
     def _normalize(self, data: np.ndarray, method: str = 'z_score', **kwargs) -> np.ndarray:
         """
         Normalize the spectroscopy data.
@@ -414,22 +373,6 @@ class GridSpectroscopyCollection(BaseFileCollection):
         """Load all grid spectroscopy files in the collection."""
         for file in self.files:
             file.load()
-    
-    def process_all(self, normalize: bool = False, smooth: bool = False, **kwargs) -> None:
-        """
-        Process all files in the collection.
-        
-        Parameters
-        ----------
-        normalize : bool
-            Whether to normalize the data
-        smooth : bool
-            Whether to smooth the data
-        **kwargs
-            Additional processing parameters
-        """
-        for file in self.files:
-            file.process(normalize=normalize, smooth=smooth, **kwargs)
     
     def get_all_data(self) -> List[np.ndarray]:
         """

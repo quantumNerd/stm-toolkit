@@ -121,10 +121,7 @@ class BasePlotter(ABC):
         the figure will be displayed inline.
         """
         self._ensure_plot()
-        # Check if there's an FFT figure (for SXMPlotter with data_source='fft')
-        if hasattr(self, 'fft_fig') and self.fft_fig is not None:
-            plt.show(self.fft_fig)
-        elif self.fig is not None:
+        if self.fig is not None:
             plt.show()
     
     def save(self, filename: Union[str, Path], dpi: Optional[int] = None,
@@ -226,6 +223,102 @@ class BasePlotter(ABC):
         if self.ax is not None:
             self.ax.set_ylabel(label, **kwargs)
     
+    def set_xlim(self, left: Optional[float] = None, right: Optional[float] = None, **kwargs) -> None:
+        """
+        Set the x-axis limits.
+        
+        Parameters
+        ----------
+        left : Optional[float]
+            Left limit. If None, uses current limit.
+        right : Optional[float]
+            Right limit. If None, uses current limit.
+        **kwargs
+            Additional arguments passed to ax.set_xlim (e.g., emit, auto)
+        """
+        self._ensure_plot()
+        if self.ax is not None:
+            self.ax.set_xlim(left, right, **kwargs)
+    
+    def set_ylim(self, bottom: Optional[float] = None, top: Optional[float] = None, **kwargs) -> None:
+        """
+        Set the y-axis limits.
+        
+        Parameters
+        ----------
+        bottom : Optional[float]
+            Bottom limit. If None, uses current limit.
+        top : Optional[float]
+            Top limit. If None, uses current limit.
+        **kwargs
+            Additional arguments passed to ax.set_ylim (e.g., emit, auto)
+        """
+        self._ensure_plot()
+        if self.ax is not None:
+            self.ax.set_ylim(bottom, top, **kwargs)
+    
+    def set_xscale(self, value: str, **kwargs) -> None:
+        """
+        Set the x-axis scale.
+        
+        Parameters
+        ----------
+        value : str
+            Scale type ('linear', 'log', 'symlog', 'logit', etc.)
+        **kwargs
+            Additional arguments passed to ax.set_xscale
+        """
+        self._ensure_plot()
+        if self.ax is not None:
+            self.ax.set_xscale(value, **kwargs)
+    
+    def set_yscale(self, value: str, **kwargs) -> None:
+        """
+        Set the y-axis scale.
+        
+        Parameters
+        ----------
+        value : str
+            Scale type ('linear', 'log', 'symlog', 'logit', etc.)
+        **kwargs
+            Additional arguments passed to ax.set_yscale
+        """
+        self._ensure_plot()
+        if self.ax is not None:
+            self.ax.set_yscale(value, **kwargs)
+    
+    def grid(self, visible: bool = True, which: str = 'major', **kwargs) -> None:
+        """
+        Configure the grid lines.
+        
+        Parameters
+        ----------
+        visible : bool
+            Whether to show grid lines (default: True)
+        which : str
+            Which grid lines to show ('major', 'minor', 'both')
+        **kwargs
+            Additional arguments passed to ax.grid (e.g., alpha, linestyle, color)
+        """
+        self._ensure_plot()
+        if self.ax is not None:
+            self.ax.grid(visible=visible, which=which, **kwargs)
+    
+    def legend(self, *args, **kwargs) -> None:
+        """
+        Place a legend on the axes.
+        
+        Parameters
+        ----------
+        *args
+            Positional arguments passed to ax.legend
+        **kwargs
+            Keyword arguments passed to ax.legend (e.g., loc, labels, title)
+        """
+        self._ensure_plot()
+        if self.ax is not None:
+            self.ax.legend(*args, **kwargs)
+    
     def tight_layout(self, **kwargs) -> None:
         """
         Adjust subplot parameters to give specified padding.
@@ -238,5 +331,62 @@ class BasePlotter(ABC):
         self._ensure_plot()
         if self.fig is not None:
             self.fig.tight_layout(**kwargs)
+    
+    def __getattr__(self, name: str) -> Any:
+        """
+        Delegate unknown attributes to the axes object.
+        
+        This makes the plotter behave like a matplotlib Axes object,
+        automatically forwarding all axes methods and properties that aren't
+        explicitly defined on the plotter. This includes:
+        - set_xticks, set_yticks
+        - set_xticklabels, set_yticklabels
+        - tick_params
+        - plot, scatter, imshow, pcolormesh, etc.
+        - All other matplotlib axes methods and properties
+        
+        Parameters
+        ----------
+        name : str
+            Attribute name
+            
+        Returns
+        -------
+        Any
+            The attribute from self.ax (wrapped if callable to ensure plot initialization)
+            
+        Raises
+        ------
+        AttributeError
+            If the attribute doesn't exist on the axes object
+        """
+        # Ensure plot is initialized before delegating
+        self._ensure_plot()
+        
+        if self.ax is None:
+            raise AttributeError(
+                f"'{self.__class__.__name__}' object has no attribute '{name}' "
+                f"and no axes available"
+            )
+        
+        if not hasattr(self.ax, name):
+            raise AttributeError(
+                f"'{self.__class__.__name__}' object has no attribute '{name}' "
+                f"and axes object has no attribute '{name}'"
+            )
+        
+        attr = getattr(self.ax, name)
+        
+        # If it's a callable, wrap it to ensure plot is initialized (redundant but safe)
+        if callable(attr):
+            def wrapper(*args, **kwargs):
+                self._ensure_plot()
+                return attr(*args, **kwargs)
+            # Preserve the original function's metadata
+            wrapper.__name__ = attr.__name__
+            wrapper.__doc__ = attr.__doc__
+            return wrapper
+        
+        return attr
     
 

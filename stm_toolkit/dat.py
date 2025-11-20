@@ -168,47 +168,6 @@ class DATFile(BaseFile):
         """Get list of available column names."""
         return self.column_names
     
-    def process(self, fit: bool = False, fit_function: Optional[Callable] = None, **kwargs) -> Dict[str, Any]:
-        """
-        Process the loaded curve data and return results (no storage).
-        
-        This method computes processing on-the-fly and returns results without storing them.
-        For plotting, processing is done automatically when needed.
-        
-        Parameters
-        ----------
-        fit : bool
-            Whether to perform curve fitting
-        fit_function : Optional[Callable]
-            Function to fit to the data
-        **kwargs
-            Additional processing parameters:
-            - initial_guess: Initial guess for fit parameters
-            - fit_method: Fitting method ('least_squares', 'minimize', etc.)
-            
-        Returns
-        -------
-        Dict[str, Any]
-            Dictionary containing processed data (not stored in class)
-        """
-        if self.raw_data is None:
-            raise ValueError("Data must be loaded before processing. Call load() first.")
-        
-        processed = {
-            'x': self.x_data,
-            'y': self.y_data
-        }
-        
-        # Curve fitting
-        if fit and fit_function is not None:
-            fit_parameters = self._fit_curve(fit_function, **kwargs)
-            processed['fit_parameters'] = fit_parameters
-            processed['fit_function'] = fit_function
-            if self.x_data is not None:
-                processed['y_fit'] = fit_function(self.x_data, **fit_parameters)
-        
-        return processed
-    
     def _fit_curve(self, fit_function: Callable, initial_guess: Optional[Dict[str, float]] = None, 
                    fit_method: str = 'least_squares', **kwargs) -> Dict[str, Any]:
         """
@@ -298,22 +257,6 @@ class DATCollection(BaseFileCollection):
         """Load all DAT files in the collection."""
         for file in self.files:
             file.load()
-    
-    def process_all(self, fit: bool = False, fit_function: Optional[Callable] = None, **kwargs) -> None:
-        """
-        Process all files in the collection.
-        
-        Parameters
-        ----------
-        fit : bool
-            Whether to perform curve fitting
-        fit_function : Optional[Callable]
-            Function to fit to the data
-        **kwargs
-            Additional processing parameters
-        """
-        for file in self.files:
-            file.process(fit=fit, fit_function=fit_function, **kwargs)
     
     def get_all_curves(self) -> List[Tuple[np.ndarray, np.ndarray]]:
         """

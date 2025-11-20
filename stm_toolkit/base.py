@@ -16,7 +16,9 @@ class BaseFile(ABC):
     
     Each file class should inherit from this and implement:
     - load(): Load raw data from file
-    - process(): Process the raw data
+    
+    Note: Processing should create new processed classes rather than modifying
+    raw data classes. Raw data classes should only handle loading.
     """
     
     def __init__(self, file_path: str | Path):
@@ -42,23 +44,6 @@ class BaseFile(ABC):
         -------
         Dict[str, Any]
             Dictionary containing the raw data
-        """
-        pass
-    
-    @abstractmethod
-    def process(self, **kwargs) -> Dict[str, Any]:
-        """
-        Process the raw data.
-        
-        Parameters
-        ----------
-        **kwargs
-            Processing parameters
-            
-        Returns
-        -------
-        Dict[str, Any]
-            Dictionary containing the processed data
         """
         pass
     
@@ -103,17 +88,9 @@ class BaseFileCollection(ABC):
         """Load all files in the collection."""
         pass
     
-    @abstractmethod
-    def process_all(self, **kwargs) -> None:
-        """
-        Process all files in the collection.
-        
-        Parameters
-        ----------
-        **kwargs
-            Processing parameters
-        """
-        pass
+    # Note: process_all() is deprecated - processing should create new processed classes
+    # Individual file classes may still implement process_all() for backward compatibility,
+    # but it's no longer required by the base class
     
     def get_hyperparameters(self) -> Dict[str, Any]:
         """Get the hyperparameters dictionary."""

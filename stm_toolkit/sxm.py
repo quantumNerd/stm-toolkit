@@ -373,335 +373,15 @@ class SXMFile(BaseFile):
         
         return self.raw_data
     
-    def process(self, background_subtract: bool = False, fft: bool = False, 
-                channel: Optional[str] = None, direction: int = 0, **kwargs) -> Dict[str, Any]:
+    # Deprecated processing methods removed - use calc() to create ProcessedSXMFile instead
+    # All processing functions are now in analysis.py and called by ProcessedSXMFile
+    
+    def get_image(self, channel: Optional[str] = None, direction: int = 0) -> Optional[np.ndarray]:
         """
-        Process the loaded image data and return results (no storage).
-        
-        This method computes processing on-the-fly and returns results without storing them.
-        For plotting, processing is done automatically when needed.
+        Get the raw image data.
         
         Parameters
         ----------
-        background_subtract : bool
-            Whether to perform background subtraction
-        fft : bool
-            Whether to compute FFT
-        channel : Optional[str]
-            Channel name to process. If None, uses default image_data
-        direction : int
-            Direction (0=forward, 1=backward)
-        **kwargs
-            Additional processing parameters:
-            - background_method: Method for background subtraction ('polynomial', 'plane', 'line')
-            - background_order: Order for polynomial background (if applicable)
-            
-        Returns
-        -------
-        Dict[str, Any]
-            Dictionary containing processed data (not stored in class)
-        """
-        if self.raw_data is None:
-            raise ValueError("Data must be loaded before processing. Call load() first.")
-        
-        # Get the image to process
-        if channel is not None and channel in self.data:
-            image_to_process = self.data[channel][direction]
-        else:
-            image_to_process = self.image_data
-        
-        if image_to_process is None:
-            raise ValueError("No image data available for processing.")
-        
-        processed = {}
-        
-        # Background subtraction
-        if background_subtract:
-            # Extract background_method from kwargs to avoid duplicate argument
-            # Make a copy of kwargs to avoid modifying the original
-            bg_kwargs = kwargs.copy()
-            background_method = bg_kwargs.pop('background_method', 'plane')
-            processed_img = self._subtract_background(
-                background_method=background_method,
-                channel=channel,
-                direction=direction,
-                **bg_kwargs
-            )
-            processed['image'] = processed_img
-        else:
-            processed['image'] = image_to_process.copy()
-        
-        # FFT analysis
-        if fft:
-            if channel is not None:
-                # Compute FFT for specified channel
-                fft_result = self.compute_fft(image=processed.get('image'), channel=channel, 
-                                             direction=direction, **kwargs)
-            else:
-                # Compute FFT for all channels
-                fft_results = self.compute_fft_all_channels(direction=direction, 
-                                                           image=processed.get('image'), **kwargs)
-                fft_result = fft_results
-            processed['fft'] = fft_result
-        
-        return processed
-    
-    def compute_fft(self, image: Optional[np.ndarray] = None, channel: Optional[str] = None,
-                   direction: int = 0, window_function: Optional[str] = None,
-                   background_subtract: bool = False, background_method: str = 'plane',
-                   **kwargs) -> Dict[str, Any]:
-        """
-        Compute 2D FFT of the image and return results (no storage).
-        
-        This function computes FFT on-the-fly without storing results in the class.
-        Useful for analysis without plotting.
-        
-        Parameters
-        ----------
-        image : Optional[np.ndarray]
-            Image to compute FFT for. If None, uses raw channel data or image_data.
-        channel : Optional[str]
-            Channel name to use. If None, uses default image_data.
-        direction : int
-            Direction (0=forward, 1=backward) if using channel data
-        window_function : Optional[str]
-            Window function name ('blackman', etc.)
-        background_subtract : bool
-            If True, subtract background before computing FFT
-        background_method : str
-            Background subtraction method ('plane', 'line') if background_subtract=True
-        **kwargs
-            Additional parameters for background subtraction
-            
-        Returns
-        -------
-        Dict[str, Any]
-            Dictionary containing:
-            - 'fft_magnitude': Magnitude of FFT
-            - 'FX': Frequency meshgrid for x-axis (nm⁻¹, 2D array)
-            - 'FY': Frequency meshgrid for y-axis (nm⁻¹, 2D array)
-            - 'ft': Full FFT array (complex)
-            - 'channel': Channel name used
-            - 'direction': Direction used
-        """
-        from .analysis import fft2d
-        
-        # Determine which image to use
-        if image is None:
-            if channel is not None and channel in self.data:
-                image = self.data[channel][direction].copy()
-            elif self.image_data is not None:
-                image = self.image_data.copy()
-            else:
-                raise ValueError("No image data available for FFT computation.")
-        else:
-            image = image.copy()
-        
-        # Apply background subtraction if requested
-        if background_subtract:
-            if background_method == 'plane':
-                image = self.subtract_plane(image=image, channel=channel, direction=direction)
-            elif background_method == 'line':
-                image = self.subtract_linear_by_line(image=image, channel=channel, direction=direction)
-        
-        # Apply windowing if requested
-        image_for_fft = image.copy()
-        if window_function and window_function.lower() == "blackman":
-            window = np.outer(
-                np.blackman(image_for_fft.shape[0]),
-                np.blackman(image_for_fft.shape[1])
-            )
-            image_for_fft = np.fft.fftshift(window * np.fft.fftshift(image_for_fft))
-        
-        # Calculate pixel spacing for frequency conversion
-        x_range = self.x_range or 100.0
-        y_range = self.y_range or 100.0
-        x_pixels = self.x_pixels or image_for_fft.shape[1]
-        y_pixels = self.y_pixels or image_for_fft.shape[0]
-        
-        sxm_x = np.linspace(-x_range / 2, x_range / 2, x_pixels)
-        sxm_y = np.linspace(-y_range / 2, y_range / 2, y_pixels)
-        dx = sxm_x[1] - sxm_x[0]  # nm
-        dy = sxm_y[1] - sxm_y[0]  # nm
-        
-        # Compute FFT using analysis module (FX, FY will be in nm⁻¹, already 2D meshgrids)
-        ft_magnitude, FX, FY = fft2d(image_for_fft, dx=dx, dy=dy, shift=True)
-        
-        # Return results (no storage)
-        channel_key = channel if channel is not None else 'default'
-        return {
-            'fft_magnitude': ft_magnitude,
-            'FX': FX,  # 2D meshgrid
-            'FY': FY,  # 2D meshgrid
-            'ft': np.fft.fftshift(np.fft.fft2(image_for_fft)),
-            'channel': channel_key,
-            'direction': direction,
-            'window_function': window_function
-        }
-    
-    def compute_fft_all_channels(self, direction: int = 0, window_function: Optional[str] = None,
-                                background_subtract: bool = False, background_method: str = 'plane',
-                                **kwargs) -> Dict[str, Dict[str, Any]]:
-        """
-        Compute 2D FFT for all available channels and return results (no storage).
-        
-        Parameters
-        ----------
-        direction : int
-            Direction (0=forward, 1=backward) to use for all channels
-        window_function : Optional[str]
-            Window function name ('blackman', etc.)
-        background_subtract : bool
-            If True, subtract background before computing FFT
-        background_method : str
-            Background subtraction method ('plane', 'line') if background_subtract=True
-        **kwargs
-            Additional parameters
-            
-        Returns
-        -------
-        Dict[str, Dict[str, Any]]
-            Dictionary of FFT results per channel: {channel_name: {FX, FY, ...}}
-        """
-        if not self.data:
-            # No channels available, compute for default image
-            return {'default': self.compute_fft(
-                channel=None, direction=direction, 
-                window_function=window_function,
-                background_subtract=background_subtract,
-                background_method=background_method,
-                **kwargs
-            )}
-        
-        # Compute FFT for each channel
-        results = {}
-        for channel_name in self.data.keys():
-            results[channel_name] = self.compute_fft(
-                channel=channel_name, direction=direction,
-                window_function=window_function,
-                background_subtract=background_subtract,
-                background_method=background_method,
-                **kwargs
-            )
-        
-        return results
-    
-    def _subtract_background(self, background_method: str = 'plane', background_order: int = 1, **kwargs) -> np.ndarray:
-        """
-        Subtract background from image.
-        
-        Parameters
-        ----------
-        background_method : str
-            Method for background subtraction ('plane', 'polynomial', 'line')
-        background_order : int
-            Order for polynomial background (if method is 'polynomial')
-            
-        Returns
-        -------
-        np.ndarray
-            Image with background subtracted
-        """
-        if self.image_data is None:
-            raise ValueError("Image data not loaded.")
-        
-        image = self.image_data.copy()
-        
-        if background_method == 'plane':
-            # Fit and subtract a 2D plane
-            return self.subtract_plane(image, **kwargs)
-        elif background_method == 'line':
-            # Subtract linear fit from each line
-            return self.subtract_linear_by_line(image, **kwargs)
-        elif background_method == 'polynomial':
-            # TODO: Implement polynomial background subtraction
-            raise NotImplementedError("Polynomial background subtraction not yet implemented.")
-        else:
-            raise ValueError(f"Unknown background method: {background_method}")
-    
-    def subtract_plane(self, image: Optional[np.ndarray] = None, channel: Optional[str] = None, direction: int = 0) -> np.ndarray:
-        """
-        Fit and subtract a 2D plane from the image.
-        
-        Parameters
-        ----------
-        image : Optional[np.ndarray]
-            Image to process. If None, uses self.image_data
-        channel : Optional[str]
-            Channel name. If provided, uses channel data instead of image
-        direction : int
-            Direction (0=forward, 1=backward). Used if channel is provided
-            
-        Returns
-        -------
-        np.ndarray
-            Image with plane subtracted
-        """
-        if image is None:
-            if channel is not None and channel in self.data:
-                image = self.data[channel][direction]
-            else:
-                image = self.image_data
-        
-        if image is None:
-            raise ValueError("No image data available.")
-        
-        # Create coordinate grids
-        y, x = np.mgrid[0:image.shape[0], 0:image.shape[1]]
-        
-        # Flatten arrays for fitting
-        x_flat = x.flatten()
-        y_flat = y.flatten()
-        z_flat = image.flatten()
-        
-        # Fit plane: z = a*x + b*y + c
-        A = np.vstack([x_flat, y_flat, np.ones(len(x_flat))]).T
-        coeffs = np.linalg.lstsq(A, z_flat, rcond=None)[0]
-        
-        # Calculate plane
-        plane = coeffs[0] * x + coeffs[1] * y + coeffs[2]
-        
-        return image - plane
-    
-    def subtract_linear_by_line(self, image: Optional[np.ndarray] = None, channel: Optional[str] = None, direction: int = 0) -> np.ndarray:
-        """
-        Subtract a linear fit from each fast-scan line.
-        
-        Parameters
-        ----------
-        image : Optional[np.ndarray]
-            Image to process. If None, uses self.image_data
-        channel : Optional[str]
-            Channel name. If provided, uses channel data instead of image
-        direction : int
-            Direction (0=forward, 1=backward). Used if channel is provided
-            
-        Returns
-        -------
-        np.ndarray
-            Image with line-by-line background subtracted
-        """
-        if image is None:
-            if channel is not None and channel in self.data:
-                image = self.data[channel][direction]
-            else:
-                image = self.image_data
-        
-        if image is None:
-            raise ValueError("No image data available.")
-        
-        # Use scipy.signal.detrend which does line-by-line detrending
-        return scipy.signal.detrend(image, axis=1)
-    
-    
-    def get_image(self, processed: bool = False, channel: Optional[str] = None, direction: int = 0) -> Optional[np.ndarray]:
-        """
-        Get the image data.
-        
-        Parameters
-        ----------
-        processed : bool
-            If True, return processed image; if False, return raw image
         channel : Optional[str]
             Channel name. If None, uses default image_data
         direction : int
@@ -710,11 +390,8 @@ class SXMFile(BaseFile):
         Returns
         -------
         np.ndarray or None
-            Image data
+            Raw image data
         """
-        if processed:
-            return self.processed_image
-        
         if channel is not None and channel in self.data:
             return self.data[channel][direction]
         
@@ -780,7 +457,8 @@ class SXMFile(BaseFile):
         """
         return SXMPlotter(self, channel=channel, direction=direction, ax=ax, **kwargs)
     
-    def calc(self, subtract_plane: bool = False, flatten: bool = False,
+    def calc(self, steps: Optional[List[Dict[str, Any]]] = None,
+             subtract_plane: bool = False, flatten: bool = False,
              filter_current: Optional[int] = None, fft: bool = False,
              channel: Optional[str] = None, direction: int = 0,
              window_function: Optional[str] = None, 
@@ -791,27 +469,52 @@ class SXMFile(BaseFile):
         This method creates a processed copy of the file with processing applied.
         The processed file stores processed data instead of raw data.
         
-        Processing steps are applied in the order specified by processing_order,
-        or in the default order: subtract_plane/flatten -> filter -> fft
+        **New flexible API (recommended):**
+            Use `steps` parameter to specify processing steps with parameters:
+            
+            ```python
+            processed = sxm_file.calc(steps=[
+                {'type': 'subtract_plane'},
+                {'type': 'filter', 'window_size': 16},
+                {'type': 'filter', 'window_size': 32},  # Second filter
+                {'type': 'fft', 'window_function': 'hanning'},
+                {'type': 'ifft'},  # Inverse FFT to go back to real space
+            ])
+            ```
+        
+        **Legacy API (still supported):**
+            Use boolean flags and processing_order:
+            - Processing steps are applied in the order specified by processing_order,
+              or in the default order: subtract_plane/flatten -> filter -> fft
         
         Parameters
         ----------
+        steps : Optional[List[Dict[str, Any]]]
+            List of processing steps with parameters. Each step is a dict with:
+            - 'type': Step type ('subtract_plane', 'flatten', 'filter', 'fft', 'ifft')
+            - Additional parameters for each step type:
+              * 'filter': 'window_size' (int), 'polyorder' (int, default=1), 'axis' (int, default=-1)
+              * 'fft': 'window_function' (str, optional), 'kaiser_beta' (float, default=5.0)
+                - window_function: 'blackman', 'hanning' (or 'hann'), 'hamming', 'bartlett', 'kaiser'
+                - kaiser_beta: Only used if window_function='kaiser'
+              * 'ifft': No parameters needed - uses stored complex data
+            If None, uses legacy API with boolean flags.
         subtract_plane : bool
-            If True, subtract a 2D plane from the image
+            [Legacy API] If True, subtract a 2D plane from the image
         flatten : bool
-            If True, subtract linear fit from every fast-scan line
+            [Legacy API] If True, subtract linear fit from every fast-scan line
         filter_current : Optional[int]
-            Savitzky-Golay filter window size (None = no filtering)
+            [Legacy API] Savitzky-Golay filter window size (None = no filtering)
         fft : bool
-            If True, compute and store FFT results
+            [Legacy API] If True, compute and store FFT results
         channel : Optional[str]
             Channel to process. If None, processes default image_data
         direction : int
             Direction (0=forward, 1=backward)
         window_function : Optional[str]
-            Window function for FFT ('blackman', etc.)
+            [Legacy API] Window function for FFT ('blackman', etc.)
         processing_order : Optional[List[str]]
-            Order of processing steps: ['subtract_plane', 'filter', 'fft'] or 
+            [Legacy API] Order of processing steps: ['subtract_plane', 'filter', 'fft'] or 
             ['flatten', 'filter', 'fft']. If None, uses default order based on 
             which flags are True.
         **kwargs
@@ -823,7 +526,7 @@ class SXMFile(BaseFile):
             A processed copy of this file with processing applied
         """
         return ProcessedSXMFile.from_sxm_file(
-            self, subtract_plane=subtract_plane, flatten=flatten,
+            self, steps=steps, subtract_plane=subtract_plane, flatten=flatten,
             filter_current=filter_current, fft=fft,
             channel=channel, direction=direction,
             window_function=window_function, 
@@ -875,8 +578,47 @@ class ProcessedSXMFile(SXMFile):
         self.metadata = original_file.metadata.copy()
         self.x_pixels = original_file.x_pixels
         self.y_pixels = original_file.y_pixels
-        self.x_range = original_file.x_range
-        self.y_range = original_file.y_range
+        
+        # Check if FFT was applied at any point (changes coordinate system)
+        self.is_fft_data = processed_data.get('fft_data', False)
+        
+        if self.is_fft_data:
+            # FFT was applied, so data is in k-space and axes should be in nm⁻¹
+            # Store original ranges for reference
+            self.original_x_range = processed_data.get('original_x_range', original_file.x_range)
+            self.original_y_range = processed_data.get('original_y_range', original_file.y_range)
+            
+            # Get k-space ranges from FX and FY
+            FX = processed_data.get('fft_FX')
+            FY = processed_data.get('fft_FY')
+            if FX is not None and FY is not None:
+                # FX and FY are 2D arrays with values in nm⁻¹
+                # Get the maximum absolute value to determine the full range
+                kx_max = np.abs(FX).max()
+                ky_max = np.abs(FY).max()
+                self.x_range = kx_max * 2  # Full range from -max to +max (in nm⁻¹)
+                self.y_range = ky_max * 2
+                self._fft_FX = FX  # Store for plotting (already 2D meshgrid)
+                self._fft_FY = FY
+            else:
+                # Fallback to original ranges if FX/FY not available
+                self.x_range = original_file.x_range
+                self.y_range = original_file.y_range
+                self._fft_FX = None
+                self._fft_FY = None
+        else:
+            # Regular processed data (real-space in nm)
+            # Use original ranges from processed_data if stored, otherwise from original file
+            if 'original_x_range' in processed_data and processed_data['original_x_range'] is not None:
+                self.x_range = processed_data['original_x_range']
+                self.y_range = processed_data['original_y_range']
+            else:
+                self.x_range = original_file.x_range
+                self.y_range = original_file.y_range
+            self._fft_FX = None
+            self._fft_FY = None
+            self.original_x_range = processed_data.get('original_x_range', original_file.x_range)
+            self.original_y_range = processed_data.get('original_y_range', original_file.y_range)
         
         # Replace raw data with processed data
         self.image_data = processed_data.get('image_data', original_file.image_data)
@@ -900,6 +642,10 @@ class ProcessedSXMFile(SXMFile):
         self.processing_steps = processing_steps
         self.processed_data = processed_data
         
+        # Store which channel and direction were processed
+        self.processed_channel = processed_data.get('processed_channel', None)
+        self.processed_direction = processed_data.get('processed_direction', 0)
+        
         # Store FFT if computed
         if 'fft' in processed_data:
             self._fft_results = processed_data['fft']
@@ -907,10 +653,11 @@ class ProcessedSXMFile(SXMFile):
             self._fft_results = None
     
     @classmethod
-    def from_sxm_file(cls, sxm_file: SXMFile, subtract_plane: bool = False,
-                     flatten: bool = False, filter_current: Optional[int] = None,
-                     fft: bool = False, channel: Optional[str] = None,
-                     direction: int = 0, window_function: Optional[str] = None,
+    def from_sxm_file(cls, sxm_file: SXMFile, steps: Optional[List[Dict[str, Any]]] = None,
+                     subtract_plane: bool = False, flatten: bool = False,
+                     filter_current: Optional[int] = None, fft: bool = False,
+                     channel: Optional[str] = None, direction: int = 0,
+                     window_function: Optional[str] = None,
                      processing_order: Optional[List[str]] = None, **kwargs) -> 'ProcessedSXMFile':
         """
         Create a ProcessedSXMFile from an SXMFile by applying processing operations.
@@ -961,47 +708,198 @@ class ProcessedSXMFile(SXMFile):
         processing_steps = []
         processed_data = {}
         
-        # Determine processing order
-        if processing_order is None:
-            # Default order based on what's enabled
-            processing_order = []
-            if subtract_plane:
-                processing_order.append('subtract_plane')
-            elif flatten:
-                processing_order.append('flatten')
-            if filter_current is not None and filter_current > 0:
-                processing_order.append('filter')
-            if fft:
-                processing_order.append('fft')
+        # Track coordinate system state
+        fft_applied = False
+        fft_FX = None
+        fft_FY = None
+        original_x_range = sxm_file.x_range
+        original_y_range = sxm_file.y_range
+        
+        # Use new flexible API if steps provided
+        if steps is not None:
+            # Apply processing steps sequentially
+            # Each step transforms the data, which becomes the input for the next step
+            for step_def in steps:
+                if not isinstance(step_def, dict):
+                    raise ValueError(f"Each step must be a dict with 'type' key. Got: {step_def}")
+                
+                step_type = step_def.get('type')
+                if step_type is None:
+                    raise ValueError(f"Step definition must have 'type' key. Got: {step_def}")
+                
+                step_params = {k: v for k, v in step_def.items() if k != 'type'}
+                
+                if step_type == 'subtract_plane':
+                    from .analysis import subtract_plane_2d
+                    image = subtract_plane_2d(image)
+                    processing_steps.append('subtract_plane')
+                    
+                elif step_type == 'flatten':
+                    from .analysis import subtract_linear_by_line_2d
+                    image = subtract_linear_by_line_2d(image)
+                    processing_steps.append('flatten')
+                    
+                elif step_type == 'filter':
+                    from scipy.signal import savgol_filter
+                    window_size = step_params.get('window_size')
+                    if window_size is None:
+                        raise ValueError("'filter' step requires 'window_size' parameter")
+                    polyorder = step_params.get('polyorder', 1)
+                    axis = step_params.get('axis', -1)
+                    
+                    # Handle complex data: filter real and imaginary parts separately
+                    is_complex = np.iscomplexobj(image)
+                    if is_complex:
+                        real_filtered = savgol_filter(np.real(image), window_size, polyorder, axis=axis)
+                        imag_filtered = savgol_filter(np.imag(image), window_size, polyorder, axis=axis)
+                        image = real_filtered + 1j * imag_filtered
+                    else:
+                        image = savgol_filter(image, window_size, polyorder, axis=axis)
+                    
+                    processing_steps.append(f'filter_{window_size}')
+                    
+                elif step_type == 'fft':
+                    # FFT transforms data AND changes coordinate system
+                    from .analysis import compute_fft_2d
+                    window_func = step_params.get('window_function')
+                    kaiser_beta = step_params.get('kaiser_beta', 5.0)
+                    
+                    fft_result = compute_fft_2d(
+                        image=image,
+                        x_range=sxm_file.x_range or 100.0,
+                        y_range=sxm_file.y_range or 100.0,
+                        x_pixels=sxm_file.x_pixels,
+                        y_pixels=sxm_file.y_pixels,
+                        window_function=window_func,
+                        kaiser_beta=kaiser_beta
+                    )
+                    
+                    # Store complex FFT data (not magnitude) so operations can work on complex
+                    image = fft_result['ft']  # Complex FFT
+                    
+                    fft_FX = fft_result['FX']  # Store k-space coordinates
+                    fft_FY = fft_result['FY']
+                    if not fft_applied:
+                        # Store original ranges before switching to k-space (only once)
+                        original_x_range = sxm_file.x_range
+                        original_y_range = sxm_file.y_range
+                    fft_applied = True  # Mark that coordinate system has changed
+                    processing_steps.append('fft')
+                    
+                elif step_type == 'ifft':
+                    # Inverse FFT: go back to real space
+                    # Following the pattern from ideal_low_pass_filter_2d:
+                    # Forward: fft2 -> fftshift (stored FFT is already shifted)
+                    # Inverse: ifftshift -> ifft2
+                    if not fft_applied:
+                        raise ValueError("Cannot apply inverse FFT: not in k-space. Apply FFT first.")
+                    
+                    # Image should already be complex FFT (stored as complex throughout)
+                    # The stored FFT from compute_fft is already shifted (fftshift applied)
+                    if np.iscomplexobj(image):
+                        image_fft_shifted = image.copy()
+                    else:
+                        # If somehow we have magnitude, convert to complex (zero phase)
+                        # This shouldn't happen with new approach, but handle gracefully
+                        image_fft_shifted = image.astype(complex)
+                    
+                    # Shift the zero frequency component back to the corner (unshift)
+                    # This reverses the fftshift from the forward FFT
+                    image_fft_unshifted = np.fft.ifftshift(image_fft_shifted)
+                    
+                    # Perform the inverse FFT
+                    image_real = np.fft.ifft2(image_fft_unshifted)
+                    
+                    # Take real part (should be real anyway, but numerical errors can add small imaginary parts)
+                    image = np.real(image_real)
+                    
+                    # Switch back to real-space coordinate system
+                    fft_applied = False  # No longer in k-space after ifft
+                    fft_FX = None
+                    fft_FY = None
+                    # Ranges will be restored when stored in processed_data
+                    # Don't modify original file's ranges!
+                    
+                    processing_steps.append('ifft')
+                    
+                else:
+                    raise ValueError(f"Unknown step type '{step_type}'. "
+                                   f"Valid types: 'subtract_plane', 'flatten', 'filter', 'fft', 'ifft'")
+        
         else:
-            # Validate processing_order contains only valid steps
-            valid_steps = ['subtract_plane', 'flatten', 'filter', 'fft']
+            # Legacy API: use boolean flags and processing_order
+            # Determine processing order
+            if processing_order is None:
+                # Default order based on what's enabled
+                processing_order = []
+                if subtract_plane:
+                    processing_order.append('subtract_plane')
+                elif flatten:
+                    processing_order.append('flatten')
+                if filter_current is not None and filter_current > 0:
+                    processing_order.append('filter')
+                if fft:
+                    processing_order.append('fft')
+            else:
+                # Validate processing_order contains only valid steps
+                valid_steps = ['subtract_plane', 'flatten', 'filter', 'fft']
+                for step in processing_order:
+                    if step not in valid_steps:
+                        raise ValueError(f"Invalid processing step '{step}'. Valid steps: {valid_steps}")
+            
+            # Apply processing steps sequentially in order
+            # Each step transforms the data, which becomes the input for the next step
             for step in processing_order:
-                if step not in valid_steps:
-                    raise ValueError(f"Invalid processing step '{step}'. Valid steps: {valid_steps}")
+                if step == 'subtract_plane' and subtract_plane:
+                    from .analysis import subtract_plane_2d
+                    image = subtract_plane_2d(image)
+                    processing_steps.append('subtract_plane')
+                elif step == 'flatten' and flatten:
+                    from .analysis import subtract_linear_by_line_2d
+                    image = subtract_linear_by_line_2d(image)
+                    processing_steps.append('flatten')
+                elif step == 'filter' and filter_current is not None and filter_current > 0:
+                    from scipy.signal import savgol_filter
+                    # Handle complex data: filter real and imaginary parts separately
+                    is_complex = np.iscomplexobj(image)
+                    if is_complex:
+                        real_filtered = savgol_filter(np.real(image), filter_current, 1, axis=-1)
+                        imag_filtered = savgol_filter(np.imag(image), filter_current, 1, axis=-1)
+                        image = real_filtered + 1j * imag_filtered
+                    else:
+                        image = savgol_filter(image, filter_current, 1, axis=-1)
+                    processing_steps.append(f'filter_{filter_current}')
+                elif step == 'fft' and fft:
+                    # FFT transforms data AND changes coordinate system
+                    from .analysis import compute_fft_2d
+                    fft_result = compute_fft_2d(
+                        image=image,
+                        x_range=sxm_file.x_range or 100.0,
+                        y_range=sxm_file.y_range or 100.0,
+                        x_pixels=sxm_file.x_pixels,
+                        y_pixels=sxm_file.y_pixels,
+                        window_function=window_function
+                    )
+                    # Store complex FFT data (not magnitude) so operations can work on complex
+                    image = fft_result['ft']  # Complex FFT
+                    fft_FX = fft_result['FX']  # Store k-space coordinates
+                    fft_FY = fft_result['FY']
+                    if not fft_applied:
+                        # Store original ranges before switching to k-space (only once)
+                        original_x_range = sxm_file.x_range
+                        original_y_range = sxm_file.y_range
+                    fft_applied = True  # Mark that coordinate system has changed
+                    processing_steps.append('fft')
         
-        # Apply processing steps sequentially in order
-        for step in processing_order:
-            if step == 'subtract_plane' and subtract_plane:
-                image = sxm_file.subtract_plane(image=image, channel=process_channel, direction=direction)
-                processing_steps.append('subtract_plane')
-            elif step == 'flatten' and flatten:
-                image = sxm_file.subtract_linear_by_line(image=image, channel=process_channel, direction=direction)
-                processing_steps.append('flatten')
-            elif step == 'filter' and filter_current is not None and filter_current > 0:
-                from scipy.signal import savgol_filter
-                image = savgol_filter(image, filter_current, 1, axis=-1)
-                processing_steps.append(f'filter_{filter_current}')
-            elif step == 'fft' and fft:
-                # FFT will be computed after all image processing is done
-                pass
-        
-        # Store processed image
+        # Store the final processed data (result of last processing step)
         if process_channel:
             # Process specific channel
             processed_data['data'] = {k: [v[0].copy(), v[1].copy()] for k, v in sxm_file.data.items()}
             processed_data['data'][channel][direction] = image
-            processed_data['image_data'] = processed_data['data'][channel][0]  # Default to forward
+            # image_data should point to the processed data for the requested direction
+            processed_data['image_data'] = processed_data['data'][channel][direction]
+            processed_data['processed_channel'] = channel
+            processed_data['processed_direction'] = direction
         else:
             # Process default image
             processed_data['image_data'] = image
@@ -1012,19 +910,26 @@ class ProcessedSXMFile(SXMFile):
                     (ch_data[0] is not None and sxm_file.image_data is not None and 
                      np.array_equal(ch_data[0], sxm_file.image_data))):
                     ch_data[0] = image
+                    processed_data['processed_channel'] = ch_name  # Store which channel was the default
                     break
+            if 'processed_channel' not in processed_data:
+                # If we couldn't find the channel, store None (default image_data)
+                processed_data['processed_channel'] = None
+            processed_data['processed_direction'] = direction
         
-        # Compute FFT if requested (after all image processing)
-        if fft and 'fft' in processing_order:
-            fft_result = sxm_file.compute_fft(
-                image=image,
-                channel=process_channel,
-                direction=direction,
-                window_function=window_function,
-                background_subtract=False  # Already processed
-            )
-            processed_data['fft'] = fft_result
-            processing_steps.append('fft')
+        # Store FFT information if FFT was applied (regardless of position in chain)
+        # After ifft, fft_applied becomes False, so data is back in real-space
+        processed_data['fft_data'] = fft_applied
+        if fft_applied:
+            processed_data['fft_FX'] = fft_FX  # Store k-space coordinates for plotting
+            processed_data['fft_FY'] = fft_FY
+            processed_data['original_x_range'] = original_x_range  # Store original ranges for reference
+            processed_data['original_y_range'] = original_y_range
+        else:
+            # If not in k-space (e.g., after ifft), ensure ranges are set to original
+            # This handles the case where ifft was the last step
+            processed_data['original_x_range'] = original_x_range
+            processed_data['original_y_range'] = original_y_range
         
         return cls(sxm_file, processed_data, processing_steps)
     
@@ -1057,7 +962,7 @@ class ProcessedSXMFile(SXMFile):
         Optional[np.ndarray]
             Raw image data from original file
         """
-        return self.original_file.get_image(processed=False, channel=channel, direction=direction)
+        return self.original_file.get_image(channel=channel, direction=direction)
     
     def get_image(self, processed: bool = True, channel: Optional[str] = None, 
                   direction: int = 0) -> Optional[np.ndarray]:
@@ -1079,7 +984,7 @@ class ProcessedSXMFile(SXMFile):
             Image data
         """
         if not processed:
-            return self.original_file.get_image(processed=False, channel=channel, direction=direction)
+            return self.original_file.get_image(channel=channel, direction=direction)
         
         # Return processed data
         if channel is not None and channel in self.data:
@@ -1105,26 +1010,33 @@ class ProcessedSXMFile(SXMFile):
     
     def compute_fft(self, image: Optional[np.ndarray] = None, channel: Optional[str] = None,
                    direction: int = 0, window_function: Optional[str] = None,
-                   background_subtract: bool = False, background_method: str = 'plane',
-                   **kwargs) -> Dict[str, Any]:
+                   kaiser_beta: float = 5.0, **kwargs) -> Dict[str, Any]:
         """
-        Compute FFT from processed data (no additional background subtraction needed).
+        Compute FFT from processed data.
         
         This method computes FFT from the already-processed image data.
+        Uses analysis module functions.
         """
+        from .analysis import compute_fft_2d
+        
         if image is None:
             image = self.get_image(processed=True, channel=channel, direction=direction)
         else:
             image = image.copy()
         
-        # Use parent's compute_fft but skip background subtraction (already processed)
-        return super().compute_fft(
+        if image is None:
+            raise ValueError("No image data available for FFT computation.")
+        
+        # Get ranges from original file
+        original_file = self.get_original_file()
+        return compute_fft_2d(
             image=image,
-            channel=channel,
-            direction=direction,
+            x_range=original_file.x_range or 100.0,
+            y_range=original_file.y_range or 100.0,
+            x_pixels=original_file.x_pixels,
+            y_pixels=original_file.y_pixels,
             window_function=window_function,
-            background_subtract=False,  # Already processed
-            **kwargs
+            kaiser_beta=kaiser_beta
         )
 
 
@@ -1140,6 +1052,7 @@ class SXMPlotter(BasePlotter):
                  flatten: bool = False, subtract_plane: bool = False,
                  subtract_line: bool = False, cmap: Union[str, Any] = 'Blues_r',
                  filter_current: Optional[int] = None, map_color_std: Optional[float] = None,
+                 enhance_peaks: bool = False,
                  ax: Optional[plt.Axes] = None, figsize: Optional[Tuple[float, float]] = None, **kwargs):
         """
         Initialize SXM plotter.
@@ -1167,6 +1080,10 @@ class SXMPlotter(BasePlotter):
             Savitzky-Golay filter window size (0 = no filtering)
         map_color_std : Optional[float]
             Color mapping standard deviation multiplier (None = no clipping)
+        enhance_peaks : bool
+            If True, apply sqrt transformation to FFT data to enhance peaks.
+            Only applies when plotting FFT data (ProcessedSXMFile with is_fft_data=True).
+            Default is False.
         **kwargs
             Additional plotting parameters
         """
@@ -1186,39 +1103,98 @@ class SXMPlotter(BasePlotter):
             self.cmap = cmap
         self.filter_current = filter_current
         self.map_color_std = map_color_std
+        self.enhance_peaks = enhance_peaks
         super().__init__(sxm_file, ax=ax, figsize=figsize, **kwargs)
     
     def _setup_plot(self, **kwargs) -> None:
         """Set up the initial plot."""
         # FFT is computed on-the-fly when fft() is called, no special handling needed here
         
-        # Get raw image data
-        image_data = self.sxm_file.get_image(
-            processed=False,
-            channel=self.channel,
-            direction=self.direction
-        )
+        # Check if this is a ProcessedSXMFile (data is already processed)
+        is_processed_file = isinstance(self.sxm_file, ProcessedSXMFile)
+        
+        # For ProcessedSXMFile, use the processed channel if no channel specified
+        # or if the specified channel matches the processed channel
+        if is_processed_file:
+            processed_channel = self.sxm_file.processed_channel
+            processed_direction = self.sxm_file.processed_direction
+            
+            # If no channel specified, use the processed channel
+            if self.channel is None and processed_channel is not None:
+                self.channel = processed_channel
+                self.direction = processed_direction
+            # If channel matches processed channel, use processed direction
+            elif self.channel == processed_channel:
+                self.direction = processed_direction
+        
+        # Get image data
+        # For ProcessedSXMFile, get_image() returns processed data by default
+        # For regular SXMFile, get_image() returns raw data
+        if is_processed_file:
+            # ProcessedSXMFile.get_image() accepts processed parameter
+            image_data = self.sxm_file.get_image(
+                processed=True,  # Get processed data for ProcessedSXMFile
+                channel=self.channel,
+                direction=self.direction
+            )
+        else:
+            # SXMFile.get_image() does not accept processed parameter
+            image_data = self.sxm_file.get_image(
+                channel=self.channel,
+                direction=self.direction
+            )
         
         if image_data is None:
             raise ValueError("No image data available to plot.")
         
-        # Apply background subtraction if requested
-        if self.subtract_plane:
-            image_data = self.sxm_file.subtract_plane(
-                image=image_data,
-                channel=self.channel,
-                direction=self.direction
-            )
-        elif self.flatten:
-            image_data = self.sxm_file.subtract_linear_by_line(
-                image=image_data,
-                channel=self.channel,
-                direction=self.direction
-            )
+        # Check if this is FFT data (needed before processing)
+        is_fft_data = isinstance(self.sxm_file, ProcessedSXMFile) and self.sxm_file.is_fft_data
         
-        # Apply filtering if requested (Savitzky-Golay filter, as in notebook)
-        if self.filter_current is not None and self.filter_current > 0:
-            image_data = savgol_filter(image_data, self.filter_current, 1, axis=-1)
+        # If data is complex, take magnitude for plotting (but keep original for processing)
+        is_complex = np.iscomplexobj(image_data)
+        if is_complex:
+            # Store complex data for potential later use
+            image_data_complex = image_data.copy()
+            # Use magnitude for plotting
+            image_data = np.abs(image_data)
+        else:
+            image_data_complex = None
+        
+        # Apply sqrt enhancement if requested and data is FFT
+        if self.enhance_peaks and is_fft_data:
+            image_data = np.sqrt(image_data)
+        
+        # Only apply processing if this is NOT a ProcessedSXMFile
+        # (ProcessedSXMFile already has processed data stored)
+        if not is_processed_file:
+            # Apply background subtraction if requested
+            from .analysis import subtract_plane_2d, subtract_linear_by_line_2d
+            if self.subtract_plane:
+                # If we had complex data, use it for processing
+                if image_data_complex is not None:
+                    image_data_complex = subtract_plane_2d(image_data_complex)
+                    image_data = np.abs(image_data_complex)  # Update magnitude
+                else:
+                    image_data = subtract_plane_2d(image_data)
+            elif self.flatten:
+                # If we had complex data, use it for processing
+                if image_data_complex is not None:
+                    image_data_complex = subtract_linear_by_line_2d(image_data_complex)
+                    image_data = np.abs(image_data_complex)  # Update magnitude
+                else:
+                    image_data = subtract_linear_by_line_2d(image_data)
+            
+            # Apply filtering if requested (Savitzky-Golay filter, as in notebook)
+            if self.filter_current is not None and self.filter_current > 0:
+                from scipy.signal import savgol_filter
+                # If we had complex data, filter it
+                if image_data_complex is not None:
+                    real_filtered = savgol_filter(np.real(image_data_complex), self.filter_current, 1, axis=-1)
+                    imag_filtered = savgol_filter(np.imag(image_data_complex), self.filter_current, 1, axis=-1)
+                    image_data_complex = real_filtered + 1j * imag_filtered
+                    image_data = np.abs(image_data_complex)  # Update magnitude
+                else:
+                    image_data = savgol_filter(image_data, self.filter_current, 1, axis=-1)
         
         # Create figure if axes not provided
         if self.ax is None:
@@ -1226,11 +1202,12 @@ class SXMPlotter(BasePlotter):
             self.fig = plt.figure(figsize=figsize)
             self.ax = self.fig.add_subplot(111)
         
-        # Handle NaN values
+        # Handle NaN values (image_data is now magnitude if complex)
         avg_dat = image_data[~np.isnan(image_data)].mean()
         image_data[np.isnan(image_data)] = avg_dat
         
         # Apply color mapping normalization (as in notebook)
+        # image_data is already magnitude at this point
         if self.map_color_std is not None and self.map_color_std > 0:
             vcenter = np.median(image_data)
             it_std = np.std(image_data)
@@ -1247,39 +1224,86 @@ class SXMPlotter(BasePlotter):
             self.fig = plt.figure(figsize=figsize)
             self.ax = self.fig.add_subplot(111)
         
-        # Get spatial ranges and create coordinate arrays (centered at 0)
-        x_range = self.sxm_file.x_range or 100.0  # Default to 100 nm
-        y_range = self.sxm_file.y_range or 100.0
-        x_pixels = self.sxm_file.x_pixels or image_data.shape[1]
-        y_pixels = self.sxm_file.y_pixels or image_data.shape[0]
+        # Check if this is FFT data (from ProcessedSXMFile with fft=True)
+        is_fft_data = isinstance(self.sxm_file, ProcessedSXMFile) and self.sxm_file.is_fft_data
         
-        # Create coordinate arrays centered at 0 (like in the notebook)
-        sxm_x = np.linspace(-x_range / 2, x_range / 2, x_pixels)
-        sxm_y = np.linspace(-y_range / 2, y_range / 2, y_pixels)
-        
-        # Use pcolormesh for better coordinate handling (as in notebook)
-        X, Y = np.meshgrid(sxm_x, sxm_y)
-        self.im_plot = self.ax.pcolormesh(
-            X, Y, image_data,
-            cmap=self.cmap,
-            rasterized=kwargs.get('rasterized', True),
-            shading='nearest'
-        )
-        
-        self.ax.set_aspect("equal")
-        self.ax.set_xlabel("X (nm)")
-        self.ax.set_ylabel("Y (nm)")
+        if is_fft_data:
+            # For FFT data, use k-space coordinates (nm⁻¹)
+            FX = self.sxm_file._fft_FX
+            FY = self.sxm_file._fft_FY
+            
+            if FX is None or FY is None:
+                # Fallback: compute coordinates from ranges
+                x_range = self.sxm_file.x_range or 100.0  # in nm⁻¹
+                y_range = self.sxm_file.y_range or 100.0
+                x_pixels = self.sxm_file.x_pixels or image_data.shape[1]
+                y_pixels = self.sxm_file.y_pixels or image_data.shape[0]
+                
+                # Create k-space coordinate arrays centered at 0
+                kx = np.linspace(-x_range / 2, x_range / 2, x_pixels)
+                ky = np.linspace(-y_range / 2, y_range / 2, y_pixels)
+                X, Y = np.meshgrid(kx, ky)
+            else:
+                # Use stored FX, FY directly (already 2D meshgrids with correct shape)
+                X, Y = FX, FY
+            
+            self.im_plot = self.ax.pcolormesh(
+                X, Y, image_data,
+                cmap=self.cmap,
+                rasterized=kwargs.get('rasterized', True),
+                shading='nearest'
+            )
+            
+            self.ax.set_aspect("equal")
+            self.ax.set_xlabel("kx (nm⁻¹)")
+            self.ax.set_ylabel("ky (nm⁻¹)")
+        else:
+            # Regular image data, use real-space coordinates (nm)
+            x_range = self.sxm_file.x_range or 100.0  # Default to 100 nm
+            y_range = self.sxm_file.y_range or 100.0
+            x_pixels = self.sxm_file.x_pixels or image_data.shape[1]
+            y_pixels = self.sxm_file.y_pixels or image_data.shape[0]
+            
+            # Create coordinate arrays centered at 0 (like in the notebook)
+            sxm_x = np.linspace(-x_range / 2, x_range / 2, x_pixels)
+            sxm_y = np.linspace(-y_range / 2, y_range / 2, y_pixels)
+            
+            # Use pcolormesh for better coordinate handling (as in notebook)
+            X, Y = np.meshgrid(sxm_x, sxm_y)
+            self.im_plot = self.ax.pcolormesh(
+                X, Y, image_data,
+                cmap=self.cmap,
+                rasterized=kwargs.get('rasterized', True),
+                shading='nearest'
+            )
+            
+            self.ax.set_aspect("equal")
+            self.ax.set_xlabel("X (nm)")
+            self.ax.set_ylabel("Y (nm)")
         
         # Add colorbar
         self.fig.colorbar(self.im_plot, ax=self.ax)
         
-        # Store image data for FFT
-        self.image_data = image_data
+        # Store image data (magnitude if complex, original if real)
+        # For complex data, we plot magnitude but may need complex data for further operations
+        if image_data_complex is not None:
+            self.image_data = image_data_complex  # Store complex version
+        else:
+            self.image_data = image_data  # Store real version
         
         # Set title
         channel_name = self.channel or "Default"
         direction_str = "Forward" if self.direction == 0 else "Backward"
-        title = f"{channel_name} ({direction_str})"
+        
+        # is_fft_data was already determined earlier in the method
+        if is_fft_data:
+            if self.enhance_peaks:
+                title = f"FFT (sqrt): {channel_name} ({direction_str})"
+            else:
+                title = f"FFT: {channel_name} ({direction_str})"
+        else:
+            title = f"{channel_name} ({direction_str})"
+        
         vg = self.sxm_file.get_gate_voltage()
         vb = self.sxm_file.get_bias()
         vd = self.sxm_file.get_source_drain_voltage()
@@ -1315,176 +1339,9 @@ class SXMPlotter(BasePlotter):
         if self.im_plot is not None:
             self.im_plot.set_cmap(cmap)
     
-    def fft(self, k_circle: float = -1, k_range: float = -1, 
-            show_radial: bool = False, enhance_peaks: bool = False,
-            fft_cmap: Optional[Union[str, Any]] = None, **kwargs) -> None:
-        """
-        Plot the Fourier transform using stored FFT results.
-        
-        This method creates the FFT plot when called.
-        
-        Parameters
-        ----------
-        k_circle : float
-            Radius of circle to overlay on FFT (in nm⁻¹). If <= 0, no circle is drawn.
-        k_range : float
-            Range for kx and ky axes (in nm⁻¹). If <= 0, auto-determined.
-        show_radial : bool
-            If True, also plot radial distribution function
-        enhance_peaks : bool
-            If True, plot sqrt of FFT magnitude to enhance peaks. Default is False (plot magnitude).
-        fft_cmap : Optional[str or matplotlib.colors.Colormap]
-            Colormap for FFT plot. If None, uses 'Blues_r' (default). 
-            Common options: 'Blues_r', 'viridis', 'plasma', 'inferno', etc.
-        **kwargs
-            Additional plotting parameters (e.g., figsize)
-        """
-        # Compute FFT on-the-fly from the same image being displayed
-        # Get raw image first
-        image = self.sxm_file.get_image(processed=False, channel=self.channel, direction=self.direction)
-        
-        # Apply same processing as the plot (if any)
-        if self.subtract_plane:
-            image = self.sxm_file.subtract_plane(image=image, channel=self.channel, direction=self.direction)
-        elif self.flatten:
-            image = self.sxm_file.subtract_linear_by_line(image=image, channel=self.channel, direction=self.direction)
-        
-        # Compute FFT on-the-fly
-        fft_result = self.sxm_file.compute_fft(
-            image=image,
-            channel=self.channel,
-            direction=self.direction,
-            window_function=kwargs.get('window_function', None),
-            background_subtract=False  # Already processed if needed
-        )
-        
-        from .analysis import radial_distribution
-        
-        ft_magnitude = fft_result['fft_magnitude']
-        FX = fft_result['FX']  # Already 2D meshgrid
-        FY = fft_result['FY']  # Already 2D meshgrid
-        
-        # Apply sqrt enhancement if requested (as in notebook)
-        if enhance_peaks:
-            ft_plot = np.sqrt(ft_magnitude)
-        else:
-            ft_plot = ft_magnitude
-        
-        max_fft = np.max(ft_plot[1:-1, 1:-1])
-        
-        # FX and FY are already in nm⁻¹ from fft2d (with dx, dy provided) and are 2D meshgrids
-        
-        # Get actual frequency ranges
-        FX_max = np.abs(FX).max()
-        FY_max = np.abs(FY).max()
-        
-        # Get spatial ranges for determining k_range
-        x_range = self.sxm_file.x_range or 100.0
-        y_range = self.sxm_file.y_range or 100.0
-        
-        # Determine k_range
-        if k_range <= 0:
-            # Auto-determine range
-            if abs(x_range - y_range) < 1e-6:  # Ranges are equal - use smaller for square plot
-                # Use the smaller frequency range to ensure square plot
-                # This makes sense because the lower resolution direction limits what we can see
-                k_range = min(FX_max, FY_max)
-            else:
-                # Different ranges - use smaller of the two
-                k_range = min(FX_max, FY_max)
-        
-        # For square plots when ranges are equal, ensure we use the same range for both axes
-        if abs(x_range - y_range) < 1e-6:  # Ranges are equal
-            # Use the determined k_range (which should be the smaller frequency)
-            pass  # k_range already set above
-        
-        # Create figure(s) using unified figure sizes
-        if show_radial:
-            figsize = self._get_figsize(self.DEFAULT_FIGSIZE_MULTI, **kwargs)
-            self.fft_fig, axes = plt.subplots(1, 2, figsize=figsize)
-            self.fft_ax = axes[0]
-            self.radial_ax = axes[1]
-        else:
-            figsize = self._get_figsize(self.DEFAULT_FIGSIZE_FFT, **kwargs)
-            self.fft_fig = plt.figure(figsize=figsize)
-            self.fft_ax = self.fft_fig.add_subplot(111)
-            self.radial_ax = None
-        
-        # FX and FY are already 2D meshgrids, use them directly for plotting
-        
-        # Determine FFT colormap (use fft_cmap if provided, otherwise use default Blues_r)
-        if fft_cmap is None:
-            fft_cmap = cm.Blues_r
-        elif isinstance(fft_cmap, str):
-            try:
-                fft_cmap = plt.get_cmap(fft_cmap)
-            except ValueError:
-                fft_cmap = cm.Blues_r
-        
-        # Plot FFT (using enhanced version if requested)
-        self.fft_plot = self.fft_ax.pcolormesh(
-            FX, FY, ft_plot,
-            shading='auto',
-            cmap=fft_cmap
-        )
-        
-        # Add k-circle if requested
-        if k_circle > 0:
-            circle = Circle((0, 0), radius=k_circle, edgecolor='k', 
-                          facecolor='none', ls='--', linewidth=1.5)
-            self.fft_ax.add_patch(circle)
-        
-        self.fft_ax.set_xlabel("kx (nm⁻¹)")
-        self.fft_ax.set_ylabel("ky (nm⁻¹)")
-        # Update title to indicate sqrt if used
-        if enhance_peaks:
-            self.fft_ax.set_title("FFT (sqrt|FFT|)")
-        else:
-            self.fft_ax.set_title("FFT")
-        self.fft_ax.set_xlim(-k_range, k_range)
-        self.fft_ax.set_ylim(-k_range, k_range)
-        self.fft_ax.set_aspect("equal")
-        
-        # Update colorbar label to indicate sqrt if used
-        if enhance_peaks:
-            colorbar_label = 'sqrt|FFT| intensity'
-        else:
-            colorbar_label = 'FFT intensity'
-        self.fft_fig.colorbar(self.fft_plot, ax=self.fft_ax, label=colorbar_label)
-        self.fft_clim(0, max_fft)
-        
-        # Radial distribution function (using analysis module)
-        if show_radial and self.radial_ax is not None:
-            # Use radial_distribution from analysis module
-            k_radial, mean_fft = radial_distribution(
-                ft_plot, FX, FY,  # FX, FY are 2D meshgrids
-                k_max=k_range if k_range > 0 else None,
-                n_bins=1000
-            )
-            
-            self.radial_ax.plot(k_radial, mean_fft, 'b-', linewidth=1.5)
-            if k_circle > 0:
-                self.radial_ax.axvline(k_circle, color='k', ls='--', linewidth=1.5)
-            self.radial_ax.set_xlim(0, k_range)
-            self.radial_ax.set_xlabel("kr (nm⁻¹)")
-            # Update ylabel and title to indicate sqrt if used
-            if enhance_peaks:
-                self.radial_ax.set_ylabel("mean sqrt|FFT|")
-                self.radial_ax.set_title("Radial distribution of sqrt|FFT| intensity")
-            else:
-                self.radial_ax.set_ylabel("mean |FFT|")
-                self.radial_ax.set_title("Radial distribution of FFT intensity")
-            self.radial_ax.grid(True, alpha=0.3)
-    
-    def fft_clim(self, c_min: float, c_max: float) -> None:
-        """Set color axis limits on the Fourier transform."""
-        if hasattr(self, 'fft_plot') and self.fft_plot is not None:
-            self.fft_plot.set_clim(c_min, c_max)
-    
-    def fft_colormap(self, cmap: str) -> None:
-        """Change the colormap for the Fourier transform."""
-        if hasattr(self, 'fft_plot') and self.fft_plot is not None:
-            self.fft_plot.set_cmap(cmap)
+    # Removed fft() method - use ProcessedSXMFile.plot() instead:
+    # processed = sxm_file.calc(steps=[{'type': 'fft'}])
+    # processed.plot()
 
 
 class SXMCollection(BaseFileCollection):
@@ -1514,35 +1371,14 @@ class SXMCollection(BaseFileCollection):
         for file in self.files:
             file.load()
     
-    def process_all(self, background_subtract: bool = False, fft: bool = False, **kwargs) -> None:
+    def get_all_images(self) -> List[np.ndarray]:
         """
-        Process all files in the collection.
+        Get all raw images from all files in the collection.
         
-        Parameters
-        ----------
-        background_subtract : bool
-            Whether to perform background subtraction
-        fft : bool
-            Whether to compute FFT
-        **kwargs
-            Additional processing parameters
-        """
-        for file in self.files:
-            file.process(background_subtract=background_subtract, fft=fft, **kwargs)
-    
-    def get_all_images(self, processed: bool = False) -> List[np.ndarray]:
-        """
-        Get all images from the collection.
-        
-        Parameters
-        ----------
-        processed : bool
-            If True, return processed images; if False, return raw images
-            
         Returns
         -------
         List[np.ndarray]
-            List of image arrays
+            List of raw image arrays
         """
-        return [file.get_image(processed=processed) for file in self.files if file.get_image(processed=processed) is not None]
+        return [file.get_image() for file in self.files if file.get_image() is not None]
 

@@ -355,3 +355,180 @@ def radial_distribution(fft_magnitude: np.ndarray, FX: np.ndarray, FY: np.ndarra
     
     return k_radial, mean_fft
 
+
+def subtract_plane_2d(image: np.ndarray) -> np.ndarray:
+    """
+    Fit and subtract a 2D plane from an image.
+    
+    This is a pure mathematical operation: image in, image out.
+    Works with both real and complex images.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        2D image array (can be real or complex)
+        
+    Returns
+    -------
+    np.ndarray
+        Image with plane subtracted (same dtype as input)
+    """
+    if image.ndim != 2:
+        raise ValueError(f"Expected 2D array, got {image.ndim}D")
+    
+    # Create coordinate grids
+    y, x = np.mgrid[0:image.shape[0], 0:image.shape[1]]
+    
+    # Handle complex data: fit plane to real part, but subtract from complex
+    is_complex = np.iscomplexobj(image)
+    if is_complex:
+        image_real = np.real(image)
+    else:
+        image_real = image
+    
+    # Flatten arrays for fitting
+    x_flat = x.flatten()
+    y_flat = y.flatten()
+    z_flat = image_real.flatten()
+    
+    # Fit plane: z = a*x + b*y + c
+    A = np.vstack([x_flat, y_flat, np.ones(len(x_flat))]).T
+    coeffs = np.linalg.lstsq(A, z_flat, rcond=None)[0]
+    
+    # Calculate plane
+    plane = coeffs[0] * x + coeffs[1] * y + coeffs[2]
+    
+    # Subtract plane from original (works for both real and complex)
+    return image - plane
+
+
+def subtract_linear_by_line_2d(image: np.ndarray) -> np.ndarray:
+    """
+    Subtract a linear fit from each fast-scan line (row) of an image.
+    
+    This is a pure mathematical operation: image in, image out.
+    Works with both real and complex images.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        2D image array (can be real or complex)
+        
+    Returns
+    -------
+    np.ndarray
+        Image with line-by-line background subtracted (same dtype as input)
+    """
+    if image.ndim != 2:
+        raise ValueError(f"Expected 2D array, got {image.ndim}D")
+    
+    import scipy.signal
+    
+    # Handle complex data: detrend real and imaginary parts separately
+    is_complex = np.iscomplexobj(image)
+    if is_complex:
+        # Detrend real and imaginary parts separately
+        real_detrended = scipy.signal.detrend(np.real(image), axis=1)
+        imag_detrended = scipy.signal.detrend(np.imag(image), axis=1)
+        return real_detrended + 1j * imag_detrended
+    else:
+        # Use scipy.signal.detrend which does line-by-line detrending
+        return scipy.signal.detrend(image, axis=1)
+
+
+def compute_fft_2d(image: np.ndarray, x_range: float, y_range: float,
+                   x_pixels: Optional[int] = None, y_pixels: Optional[int] = None,
+                   window_function: Optional[str] = None, kaiser_beta: float = 5.0) -> Dict[str, Any]:
+    """
+    Compute 2D FFT of an image with optional windowing.
+    
+    This is a pure mathematical operation: image in, FFT results out.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        2D image array (can be real or complex)
+    x_range : float
+        Real-space range in x-direction (nm)
+    y_range : float
+        Real-space range in y-direction (nm)
+    x_pixels : Optional[int]
+        Number of pixels in x-direction. If None, uses image.shape[1]
+    y_pixels : Optional[int]
+        Number of pixels in y-direction. If None, uses image.shape[0]
+    window_function : Optional[str]
+        Window function name. Supported: 'blackman', 'hanning' (or 'hann'), 
+        'hamming', 'bartlett', 'kaiser'. If None, no windowing is applied.
+    kaiser_beta : float
+        Beta parameter for Kaiser window (default: 5.0). Only used if window_function='kaiser'.
+        
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - 'fft_magnitude': Magnitude of FFT
+        - 'FX': Frequency meshgrid for x-axis (nm⁻¹, 2D array)
+        - 'FY': Frequency meshgrid for y-axis (nm⁻¹, 2D array)
+        - 'ft': Full FFT array (complex, shifted)
+    """
+    if image.ndim != 2:
+        raise ValueError(f"Expected 2D array, got {image.ndim}D")
+    
+    # Apply windowing if requested
+    image_for_fft = image.copy()
+    if window_function:
+        window_name = window_function.lower()
+        if window_name == "blackman":
+            window = np.outer(
+                np.blackman(image_for_fft.shape[0]),
+                np.blackman(image_for_fft.shape[1])
+            )
+        elif window_name == "hanning" or window_name == "hann":
+            window = np.outer(
+                np.hanning(image_for_fft.shape[0]),
+                np.hanning(image_for_fft.shape[1])
+            )
+        elif window_name == "hamming":
+            window = np.outer(
+                np.hamming(image_for_fft.shape[0]),
+                np.hamming(image_for_fft.shape[1])
+            )
+        elif window_name == "bartlett":
+            window = np.outer(
+                np.bartlett(image_for_fft.shape[0]),
+                np.bartlett(image_for_fft.shape[1])
+            )
+        elif window_name == "kaiser":
+            window = np.outer(
+                np.kaiser(image_for_fft.shape[0], kaiser_beta),
+                np.kaiser(image_for_fft.shape[1], kaiser_beta)
+            )
+        else:
+            raise ValueError(
+                f"Unknown window function '{window_function}'. "
+                f"Supported windows: 'blackman', 'hanning', 'hann', 'hamming', 'bartlett', 'kaiser'"
+            )
+        
+        # Apply window directly to the image in real space
+        image_for_fft = window * image_for_fft
+    
+    # Calculate pixel spacing for frequency conversion
+    x_pixels = x_pixels or image_for_fft.shape[1]
+    y_pixels = y_pixels or image_for_fft.shape[0]
+    
+    sxm_x = np.linspace(-x_range / 2, x_range / 2, x_pixels)
+    sxm_y = np.linspace(-y_range / 2, y_range / 2, y_pixels)
+    dx = sxm_x[1] - sxm_x[0]  # nm
+    dy = sxm_y[1] - sxm_y[0]  # nm
+    
+    # Compute FFT using fft2d function
+    ft_magnitude, FX, FY = fft2d(image_for_fft, dx=dx, dy=dy, shift=True)
+    
+    # Return results
+    return {
+        'fft_magnitude': ft_magnitude,
+        'FX': FX,  # 2D meshgrid
+        'FY': FY,  # 2D meshgrid
+        'ft': np.fft.fftshift(np.fft.fft2(image_for_fft)),  # Complex FFT, shifted
+    }
+
